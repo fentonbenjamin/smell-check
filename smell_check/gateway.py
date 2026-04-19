@@ -180,7 +180,6 @@ def _build_http_app():
                 self._json(500, {"error": f"verification failed: {e}"})
 
         def _serve_page(self):
-            from .thread_server import _CONSUMER_PAGE
             html = _CONSUMER_PAGE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -213,6 +212,88 @@ def _build_http_app():
             pass
 
     return ThreadingHTTPServer, HTTPHandler
+
+
+# ---------------------------------------------------------------------------
+# Consumer page
+# ---------------------------------------------------------------------------
+
+_CONSUMER_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smell Check</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fafafa;color:#1a1a1a;max-width:480px;margin:0 auto;padding:16px;min-height:100vh;display:flex;flex-direction:column}
+h1{font-size:22px;font-weight:600;margin-bottom:4px}
+.sub{font-size:14px;color:#666;margin-bottom:20px;line-height:1.4}
+textarea{width:100%;min-height:120px;padding:12px;border:1px solid #ddd;border-radius:10px;font-size:16px;font-family:inherit;resize:vertical;outline:none}
+textarea:focus{border-color:#007aff}
+button{width:100%;padding:14px;margin-top:12px;background:#007aff;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer}
+button:active{background:#0056b3}
+button:disabled{background:#ccc;cursor:not-allowed}
+.results{margin-top:24px;flex:1}
+.section{margin-bottom:16px}
+.section h2{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#888;margin-bottom:6px}
+.card{background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:12px 14px;margin-bottom:6px;font-size:15px;line-height:1.5}
+.card.finding{border-left:3px solid #ff3b30}
+.card.stable{border-left:3px solid #34c759}
+.card.open{border-left:3px solid #ff9500}
+.because{font-size:13px;color:#666;margin-top:4px}
+.gauge{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:10px;margin-bottom:16px;font-size:14px}
+.gauge.green{background:#e8f5e9;border:1px solid #34c759}
+.gauge.red{background:#fce4ec;border:1px solid #ff3b30}
+.dot{width:14px;height:14px;border-radius:50%;flex-shrink:0}
+.gauge.green .dot{background:#34c759;box-shadow:0 0 6px #34c75980}
+.gauge.red .dot{background:#ff3b30;box-shadow:0 0 6px #ff3b3080}
+.gauge-text{font-size:13px;color:#333}
+.empty{text-align:center;color:#999;padding:40px 20px;font-size:15px;line-height:1.5}
+.loading{text-align:center;padding:20px;color:#999}
+</style>
+</head>
+<body>
+<h1>Smell Check</h1>
+<p class="sub">Paste a thread or code snippet.</p>
+<textarea id="input" placeholder="Paste here..."></textarea>
+<button id="go" onclick="run()">Smell Check</button>
+<div class="results" id="results">
+<div class="empty">Paste something and hit the button.</div>
+</div>
+<script>
+async function run(){
+const t=document.getElementById('input').value.trim();
+if(!t)return;
+const b=document.getElementById('go'),r=document.getElementById('results');
+b.disabled=true;b.textContent='Checking...';
+r.innerHTML='<div class="loading">Smelling...</div>';
+try{
+const resp=await fetch('/threads/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+const d=await resp.json();
+if(d.error){r.innerHTML='<div class="empty">'+d.error+'</div>';return}
+let h='';
+const v=d.verification||{};
+if(v.valid){h+='<div class="gauge green"><div class="dot"></div><div class="gauge-text">Verified. Wall held. '+v.checks+' checks passed.</div></div>'}
+else{h+='<div class="gauge red"><div class="dot"></div><div class="gauge-text">Custody broken.</div></div>'}
+h+=sec('Findings',d.findings||[],'finding');
+h+=sec('Stable',d.stable_points||[],'stable');
+h+=sec('Open Questions',d.open_questions||[],'open');
+if(!d.findings?.length&&!d.stable_points?.length&&!d.open_questions?.length)h+='<div class="empty">Nothing detected. Try more text.</div>';
+r.innerHTML=h;
+}catch(e){r.innerHTML='<div class="empty">Error.</div>'}
+finally{b.disabled=false;b.textContent='Smell Check'}
+}
+function sec(title,items,cls){
+if(!items.length)return'';
+let h='<div class="section"><h2>'+title+'</h2>';
+for(const i of items){h+='<div class="card '+cls+'">'+esc(i.judgment);if(i.because)h+='<div class="because">'+esc(i.because)+'</div>';h+='</div>'}
+return h+'</div>'}
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+document.getElementById('input').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.metaKey)run()});
+</script>
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
