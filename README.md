@@ -36,10 +36,10 @@ python3 -m venv .venv
 .venv/bin/pytest tests/ -q
 
 # Run HTTP server
-.venv/bin/python -m surface.gateway
+.venv/bin/python -m smell_check.gateway
 
 # Run MCP server (stdio, for Claude Code)
-.venv/bin/python -m surface.gateway --stdio
+.venv/bin/python -m smell_check.gateway --stdio
 ```
 
 ## Claude Code MCP config
@@ -52,7 +52,7 @@ Add to your `.mcp.json`:
     "smell-check": {
       "type": "stdio",
       "command": "/path/to/smell-check/.venv/bin/python",
-      "args": ["-m", "surface.gateway", "--stdio"],
+      "args": ["-m", "smell_check.gateway", "--stdio"],
       "cwd": "/path/to/smell-check"
     }
   }

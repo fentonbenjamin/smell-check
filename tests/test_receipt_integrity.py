@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# sys.path handled by package layout
 
-from src.surface.stamp import (
+from smell_check.stamp import (
     stamp, verify_stamp, h, GENESIS,
     hash_analysis_payload, verify_receipt_payload,
 )
@@ -104,7 +104,7 @@ class TestReceiptPayloadBinding:
         receipt = _build_receipt(result)
 
         # Stamp self-hash
-        from src.surface.stamp import Stamp
+        from smell_check.stamp import Stamp
         stmp = Stamp(**receipt["stamp"])
         assert verify_stamp(stmp)
 
@@ -126,7 +126,7 @@ class TestReceiptPayloadBinding:
         receipt["analysis"]["summary"]["violation_count"] = 0
 
         # Stamp self-hash still passes (we didn't touch the stamp)
-        from src.surface.stamp import Stamp
+        from smell_check.stamp import Stamp
         stmp = Stamp(**receipt["stamp"])
         assert verify_stamp(stmp), "stamp self-hash should still pass"
 

@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# sys.path handled by package layout
 
-from src.surface.pipeline import analyze_thread, analyze_thread_multi
-from src.surface.projections import project_consumer, project_pro
+from smell_check.pipeline import analyze_thread, analyze_thread_multi
+from smell_check.projections import project_consumer, project_pro
 
 
 # ---------------------------------------------------------------------------

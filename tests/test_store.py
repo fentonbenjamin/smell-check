@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# sys.path handled by package layout
 
-from src.surface.stamp import stamp, verify_stamp, h, GENESIS, _canonical_json
-from src.surface.store import (
+from smell_check.stamp import stamp, verify_stamp, h, GENESIS, _canonical_json
+from smell_check.store import (
     init_db,
     blob_write, blob_read,
     stamp_write, stamp_read, stamp_chain,

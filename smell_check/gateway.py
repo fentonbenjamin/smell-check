@@ -25,7 +25,6 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 # Ensure src is importable
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from .chamber import process_through_chamber, verify_custody, measure_chamber
 from .projections import project_smell_check, project_consumer, project_pro

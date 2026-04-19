@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# sys.path handled by package layout
 
-from src.surface.gateway import smell_check
+from smell_check.gateway import smell_check
 
 
 class TestSmellCheck:
@@ -90,7 +90,7 @@ class TestSmellCheck:
 class TestVerifyLoop:
 
     def test_smell_check_then_verify(self):
-        from src.surface.chamber import verify_custody
+        from smell_check.chamber import verify_custody
         result = smell_check("Test the full loop")
         custody = result["custody_record"]
         verification = verify_custody(custody)
@@ -98,7 +98,7 @@ class TestVerifyLoop:
         assert verification["wall_state"] == "held"
 
     def test_tampered_record_fails(self):
-        from src.surface.chamber import verify_custody
+        from smell_check.chamber import verify_custody
         result = smell_check(
             "The server guarantees sub-10ms latency for all endpoints"
         )
@@ -114,11 +114,11 @@ class TestVerifyLoop:
 class TestMCPRegistration:
 
     def test_one_tool_registered(self):
-        from src.surface.gateway import mcp
+        from smell_check.gateway import mcp
         tools = mcp._tool_manager._tools
         assert "smell_check" in tools
         assert len(tools) == 1
 
     def test_server_name(self):
-        from src.surface.gateway import mcp
+        from smell_check.gateway import mcp
         assert mcp.name == "Smell Check"

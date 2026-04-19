@@ -14,16 +14,16 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# sys.path handled by package layout
 
-from src.surface.receipted import (
+from smell_check.receipted import (
     run_tagger_with_receipt,
     run_sieve_with_receipt,
     run_pipeline_with_receipts,
     _hash_claims,
     _canonical_claim,
 )
-from src.surface.mother_types import (
+from smell_check.mother_types import (
     tagger_to_claims,
     make_witness,
     make_typed_unit,

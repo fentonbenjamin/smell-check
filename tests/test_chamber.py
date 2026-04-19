@@ -10,17 +10,17 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# sys.path handled by package layout
 
-from src.surface.chamber import (
+from smell_check.chamber import (
     stage_blob,
     measure_chamber,
     attest_boundary,
     process_through_chamber,
     verify_custody,
 )
-from src.surface.stamp import h
-from src.surface.projections import project_consumer, project_pro
+from smell_check.stamp import h
+from smell_check.projections import project_consumer, project_pro
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestBoundaryAttestation:
 
         # Recompute the attestation hash from its fields
         # perception_mode and execution_class are proof-bearing
-        from src.surface.stamp import _canonical_json
+        from smell_check.stamp import _canonical_json
         partial = {
             "blob_hash": att.blob_hash,
             "chamber_hash": att.chamber_hash,
@@ -402,8 +402,8 @@ class TestCustodyInscription:
     def test_inscribed_blob_matches_input(self):
         """The stored input blob must be the original text, not governed_state."""
         import tempfile
-        from src.surface.store import init_db, blob_read
-        from src.surface.stamp import h as sha256
+        from smell_check.store import init_db, blob_read
+        from smell_check.stamp import h as sha256
 
         text = "The original input text that should be stored as-is"
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
