@@ -1,8 +1,6 @@
 # Smell Check
 
-Deterministic semantic smell detection for threads, conversations, and code.
-
-One tool. Two perception lanes. One judgment layer.
+Smell detection for code.
 
 ## What it does
 
@@ -22,8 +20,6 @@ code/diff           → analyzer (AST)  → code adapter  → sieve
                                                           ↓
                                                     smell_check output
 ```
-
-Two perception lanes, one judgment layer. The types carry the maps. The lanes carry the sensors. The sieve carries the law.
 
 ## Run locally
 
@@ -86,7 +82,7 @@ curl http://localhost:8800/health
 
 ### MCP
 
-One tool: `smell_check`
+Tool: `smell_check`
 
 ```
 smell_check(text="...", topic="optional-label")
@@ -109,11 +105,8 @@ Returns: summary, findings, stable_points, open_questions, verification, custody
 
 ## Properties
 
-- **Pure** — no model calls, no network, no external APIs
+- **Pure** — no model calls
 - **Deterministic** — same input, same output, always
-- **Local** — runs on your machine, stdlib + pydantic + mcp
-- **Receipted** — every transform is stamped, every judgment is verifiable
-- **Heuristic** — perception is cue-based, not model-based
 
 ## 117 tests
 
