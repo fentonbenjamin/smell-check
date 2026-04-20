@@ -68,10 +68,53 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
             "epistemic_event": claim.get("epistemic_event", ""),
         }
 
-        if mother_type == "UNCERTAINTY":
+        finding_kind = claim.get("_finding_kind", "")
+
+        # Code-specific rendering by finding kind (structural, not prose)
+        if finding_kind == "impurity":
+            findings.append({
+                "judgment": f"Impure function: {text}",
+                "because": "This function has side effects or I/O operations.",
+                "where": where,
+                "what_to_do": "Review whether the impurity is intentional.",
+                "drillback": drillback,
+            })
+        elif finding_kind == "violation":
+            findings.append({
+                "judgment": f"Violation: {text}",
+                "because": "Structural analysis found a constraint violation or contract mismatch.",
+                "where": where,
+                "what_to_do": "Review the function's behavior vs its contract.",
+                "drillback": drillback,
+            })
+        elif finding_kind == "provenance_gap":
+            findings.append({
+                "judgment": f"Unstamped dependency: {text}",
+                "because": "This import appears external to the repo with no provenance.",
+                "where": where,
+                "what_to_do": "Verify the dependency source.",
+                "drillback": drillback,
+            })
+        elif finding_kind == "purity":
+            stable_points.append({
+                "judgment": f"Pure function: {text}",
+                "because": "No I/O, no side effects detected by AST analysis.",
+                "where": where,
+                "drillback": drillback,
+            })
+        elif finding_kind in ("significant_removal", "large_addition", "file_change"):
+            findings.append({
+                "judgment": text,
+                "because": f"Diff structural signal: {finding_kind.replace('_', ' ')}.",
+                "where": where,
+                "what_to_do": "Review the change.",
+                "drillback": drillback,
+            })
+        # Thread-specific rendering by mother type (prose, not structural)
+        elif mother_type == "UNCERTAINTY":
             open_questions.append({
                 "judgment": f"This is still unclear: {text}",
-                "because": "Expressed as uncertainty — no corroborating decision or evidence found.",
+                "because": "Expressed as uncertainty.",
                 "where": where,
                 "what_to_do": "Confirm or resolve before relying on it.",
                 "drillback": drillback,
@@ -79,38 +122,28 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
         elif mother_type == "CONSTRAINT" and _looks_actionable(text):
             findings.append({
                 "judgment": f"Someone needs to act: {text}",
-                "because": "This is an obligation or required action that hasn't been confirmed.",
+                "because": "This is an obligation or required action.",
                 "where": where,
                 "what_to_do": "Assign it or confirm it's handled.",
                 "drillback": drillback,
             })
         elif mother_type == "CONSTRAINT":
             findings.append({
-                "judgment": f"This smells like a hard requirement: {text}",
-                "because": "Expressed as a constraint — something that must be true or can't be violated.",
+                "judgment": f"Requirement: {text}",
+                "because": "Expressed as a constraint.",
                 "where": where,
-                "what_to_do": "Verify it's being respected downstream.",
+                "what_to_do": "Verify it's being respected.",
                 "drillback": drillback,
             })
         elif mother_type == "WITNESS":
             stable_points.append({
-                "judgment": f"This is reported: {text}",
-                "because": "Someone attributed this to a source or prior observation.",
+                "judgment": f"Reported: {text}",
+                "because": "Attributed to a source or observation.",
                 "where": where,
                 "drillback": drillback,
             })
         elif mother_type == "CONTRACT":
-            finding_kind = claim.get("_finding_kind", "")
-            if finding_kind == "violation":
-                # Code analysis found a contract mismatch — this is a finding, not stable
-                findings.append({
-                    "judgment": f"Contract mismatch: {text}",
-                    "because": "The code's apparent contract doesn't match its actual behavior.",
-                    "where": where,
-                    "what_to_do": "Review the function's behavior vs its name/signature.",
-                    "drillback": drillback,
-                })
-            elif _looks_actionable(text):
+            if _looks_actionable(text):
                 findings.append({
                     "judgment": f"Action item: {text}",
                     "because": "This reads as a commitment to do something.",
@@ -120,7 +153,7 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 })
             else:
                 stable_points.append({
-                    "judgment": f"This looks decided: {text}",
+                    "judgment": f"Decided: {text}",
                     "because": "Expressed as a decision or agreement.",
                     "where": where,
                     "drillback": drillback,
@@ -128,14 +161,14 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
         elif mother_type == "RELATION":
             stable_points.append({
                 "judgment": f"Noted: {text}",
-                "because": "This connects or relates to other points in the thread.",
+                "because": "Relates to other points.",
                 "where": where,
                 "drillback": drillback,
             })
         else:
             stable_points.append({
                 "judgment": text,
-                "because": "Promoted through the sieve without a specific governance type.",
+                "because": "Promoted without a specific finding kind.",
                 "where": where,
                 "drillback": drillback,
             })

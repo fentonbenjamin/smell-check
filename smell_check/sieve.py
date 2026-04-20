@@ -141,6 +141,31 @@ def _normalize_words(text: str) -> set[str]:
     return set(stripped.split())
 
 
+def _dedup_anchor(claim: dict[str, Any]) -> str | None:
+    """Extract a structural dedup anchor from a claim. Pure.
+
+    Code findings: (file, function, finding_kind)
+    Thread findings: clause_id if present
+
+    Returns None if no anchor available (falls back to word overlap).
+    """
+    where = claim.get("_where")
+    finding_kind = claim.get("_finding_kind", "")
+
+    if where and isinstance(where, dict):
+        # Code finding with file/function/line anchor
+        f = where.get("file", "")
+        fn = where.get("function", "")
+        if f or fn:
+            return f"{f}:{fn}:{finding_kind}"
+
+    clause_id = claim.get("clause_id", "")
+    if clause_id and finding_kind:
+        return f"{clause_id}:{finding_kind}"
+
+    return None
+
+
 def _word_overlap(a: set[str], b: set[str]) -> float:
     """Jaccard similarity between two word sets."""
     if not a and not b:
@@ -341,7 +366,17 @@ def promote(
         c_words = _normalize_words(text)
         is_dup = False
 
+        # Anchor-aware dedup: code findings use structural identity, not word overlap.
+        # Two findings about different functions are not duplicates even if they share words.
+        c_anchor = _dedup_anchor(c)
+
         for i, (existing, existing_words) in enumerate(word_sets):
+            # If both have anchors, compare anchors first
+            e_anchor = _dedup_anchor(existing)
+            if c_anchor and e_anchor:
+                if c_anchor != e_anchor:
+                    continue  # different anchor = not a duplicate, skip word check
+
             overlap = _word_overlap(c_words, existing_words)
             if overlap > 0.8:
                 # Keep the longer one
@@ -437,6 +472,12 @@ def promote(
 
     for i in range(len(final_promoted)):
         for j in range(i + 1, len(final_promoted)):
+            # Anchor-aware contest: different anchors cannot contest each other
+            anchor_i = _dedup_anchor(final_promoted[i])
+            anchor_j = _dedup_anchor(final_promoted[j])
+            if anchor_i and anchor_j and anchor_i != anchor_j:
+                continue  # different structural anchors = not in tension
+
             text_i = final_promoted[i].get("text", "").strip()
             text_j = final_promoted[j].get("text", "").strip()
             if _has_attack_signal(text_i, text_j):

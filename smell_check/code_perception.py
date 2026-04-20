@@ -74,14 +74,42 @@ def detect_input_kind(text: str) -> str:
 # Analyzer → typed findings adapter
 # ---------------------------------------------------------------------------
 
+def _extract_local_modules(source: str) -> set[str]:
+    """Extract module names that are likely local/in-repo from relative imports. Pure.
+
+    Relative imports (from .foo, from ..bar) are always local.
+    We also infer top-level modules from the source's own package structure.
+    """
+    import ast as _ast
+    local = set()
+    try:
+        tree = _ast.parse(source)
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.ImportFrom):
+                if node.level and node.level > 0:
+                    # Relative import — always local
+                    if node.module:
+                        local.add(node.module.split(".")[0])
+                    # Also mark the imported names as local origins
+                    for alias in (node.names or []):
+                        if alias.name != "*":
+                            local.add(alias.name.split(".")[0])
+    except SyntaxError:
+        pass
+    return local
+
+
 def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[str, Any]]:
     """Convert analyzer output to typed findings for the sieve. Pure.
 
     Each finding becomes a claim-shaped dict that the sieve can consume,
     with mother_type, text, and structural drillback.
     """
+    # Build a local module map from relative imports in the source
+    local_modules = _extract_local_modules(source)
+
     try:
-        analysis = analyze_source(source, filename)
+        analysis = analyze_source(source, filename, repo_modules=local_modules)
     except SyntaxError:
         return []
 

@@ -81,58 +81,59 @@ def analyze_thread(
     # Detect input kind — route to the right perception lane
     input_kind = detect_input_kind(text)
 
-    # Run the trunk pipeline with receipts (thread lane — always runs)
-    # This calls: classify_turn → tagger_to_typed_units → promote
-    # Each step is stamped. The chain links tagger → mother_types → sieve.
-    pipeline_result = run_pipeline_with_receipts(
-        text,
-        topic_context,
-        turn_id=turn_id,
-        actor=actor,
-    )
+    # Route to the right perception lane based on input kind.
+    # When input is code/diff, ONLY the code lane runs.
+    # The thread lane should not fire on docstrings and comments.
 
-    # Extract the governed state — the canonical output object
-    tagger_result = pipeline_result["tagger_result"]
-    sieve_result = pipeline_result["sieve_result"]
-    classification = tagger_result["classification"]
+    if input_kind in ("python_source", "diff"):
+        # CODE LANE ONLY — structural perception, no prose cues
+        code_findings = []
+        if input_kind == "python_source":
+            code_findings = analyzer_to_findings(text)
+        elif input_kind == "diff":
+            code_findings = diff_to_findings(text)
 
-    # Build typed units from tagger output (for the governed state)
-    # Include clause_id and source_span for anchor traceability
-    clause_spans = {c.clause_id: c.span for c in classification.clauses}
-    tags_data = [
-        {
-            "event_type": t.event_type,
-            "confidence": t.confidence,
-            "span": t.span,
-            "clause_id": t.clause_id,
-            "source_span": clause_spans.get(t.clause_id),
-        }
-        for t in classification.tags
-    ]
-    typed_units = tagger_to_typed_units(
-        text, tags_data, actor=actor, turn_id=turn_id,
-    )
+        # Code findings go through the sieve
+        if code_findings:
+            all_promoted, all_contested, all_deferred, all_loss = promote(
+                code_findings, topic_context
+            )
+        else:
+            all_promoted, all_contested, all_deferred, all_loss = [], [], [], []
 
-    # Code perception lane — runs when input looks like code or diff
-    # Code findings go through the SAME sieve as thread findings.
-    # Two perception lanes, one judgment layer.
-    code_findings = []
-    if input_kind == "python_source":
-        code_findings = analyzer_to_findings(text)
-    elif input_kind == "diff":
-        code_findings = diff_to_findings(text)
-
-    # If code lane produced findings, run them through the sieve too
-    if code_findings:
-        code_promoted, code_contested, code_deferred, code_loss = promote(
-            code_findings, topic_context
+        # Still need a receipted pipeline run for the stamp chain
+        # Run it but discard the thread-lane sieve results
+        pipeline_result = run_pipeline_with_receipts(
+            text, topic_context, turn_id=turn_id, actor=actor,
         )
-        # Merge sieve results from both lanes
-        all_promoted = list(sieve_result["promoted"]) + list(code_promoted)
-        all_contested = list(sieve_result["contested"]) + list(code_contested)
-        all_deferred = list(sieve_result["deferred"]) + list(code_deferred)
-        all_loss = list(sieve_result["loss"]) + list(code_loss)
+        tagger_result = pipeline_result["tagger_result"]
+        classification = tagger_result["classification"]
+        typed_units = []  # no thread-lane typed units for code input
+
     else:
+        # THREAD LANE — clause cues, surface acts, prose perception
+        pipeline_result = run_pipeline_with_receipts(
+            text, topic_context, turn_id=turn_id, actor=actor,
+        )
+        tagger_result = pipeline_result["tagger_result"]
+        sieve_result = pipeline_result["sieve_result"]
+        classification = tagger_result["classification"]
+
+        clause_spans = {c.clause_id: c.span for c in classification.clauses}
+        tags_data = [
+            {
+                "event_type": t.event_type,
+                "confidence": t.confidence,
+                "span": t.span,
+                "clause_id": t.clause_id,
+                "source_span": clause_spans.get(t.clause_id),
+            }
+            for t in classification.tags
+        ]
+        typed_units = tagger_to_typed_units(
+            text, tags_data, actor=actor, turn_id=turn_id,
+        )
+
         all_promoted = sieve_result["promoted"]
         all_contested = sieve_result["contested"]
         all_deferred = sieve_result["deferred"]
