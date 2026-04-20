@@ -22,7 +22,7 @@ from .mother_types import tagger_to_typed_units
 from .sieve import promote
 from .stamp import h, _canonical_json
 from .receipted import run_pipeline_with_receipts
-from .code_perception import detect_input_kind, analyzer_to_findings, diff_to_findings
+from .code_perception import detect_input_kind, analyzer_to_findings, diff_to_findings, split_mixed_input
 
 
 def analyze_thread(
@@ -93,7 +93,6 @@ def analyze_thread(
         elif input_kind == "diff":
             code_findings = diff_to_findings(text)
 
-        # Code findings go through the sieve
         if code_findings:
             all_promoted, all_contested, all_deferred, all_loss = promote(
                 code_findings, topic_context
@@ -102,16 +101,84 @@ def analyze_thread(
             all_promoted, all_contested, all_deferred, all_loss = [], [], [], []
 
         # Still need a receipted pipeline run for the stamp chain
-        # Run it but discard the thread-lane sieve results
         pipeline_result = run_pipeline_with_receipts(
             text, topic_context, turn_id=turn_id, actor=actor,
         )
         tagger_result = pipeline_result["tagger_result"]
         classification = tagger_result["classification"]
-        typed_units = []  # no thread-lane typed units for code input
+        typed_units = []
+
+    elif input_kind == "mixed":
+        # BOTH LANES — split input, run each lane on its segments
+        segments = split_mixed_input(text)
+
+        # Run receipted pipeline on FULL text (for correct blob→chain binding)
+        # The tagger will see everything including code blocks, but that's OK —
+        # the thread lane findings are prose-level and code findings come from
+        # the code lane separately. Mixed input accepts that the tagger may
+        # produce some noise on code blocks; the code lane's structural findings
+        # will be stronger for those segments.
+        pipeline_result = run_pipeline_with_receipts(
+            text, topic_context, turn_id=turn_id, actor=actor,
+        )
+        tagger_result = pipeline_result["tagger_result"]
+        sieve_result = pipeline_result["sieve_result"]
+        classification = tagger_result["classification"]
+
+        clause_spans = {c.clause_id: c.span for c in classification.clauses}
+        tags_data = [
+            {
+                "event_type": t.event_type,
+                "confidence": t.confidence,
+                "span": t.span,
+                "clause_id": t.clause_id,
+                "source_span": clause_spans.get(t.clause_id),
+            }
+            for t in classification.tags
+        ]
+        typed_units = tagger_to_typed_units(
+            text, tags_data, actor=actor, turn_id=turn_id,
+        )
+
+        thread_promoted = list(sieve_result["promoted"])
+        thread_contested = list(sieve_result["contested"])
+        thread_deferred = list(sieve_result["deferred"])
+        thread_loss = list(sieve_result["loss"])
+
+        # Code lane on code segments
+        code_findings = []
+        for code_seg in segments.get("code", []):
+            # Strip fenced code block markers (```python ... ```)
+            code_seg_clean = code_seg.strip()
+            if code_seg_clean.startswith("```"):
+                lines = code_seg_clean.split("\n")
+                # Remove first line (```python) and last line (```)
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                code_seg_clean = "\n".join(lines).strip()
+            if not code_seg_clean:
+                continue
+            # Try as Python source first
+            seg_findings = analyzer_to_findings(code_seg_clean)
+            if not seg_findings:
+                # Try as diff
+                seg_findings = diff_to_findings(code_seg_clean)
+            code_findings.extend(seg_findings)
+
+        if code_findings:
+            code_promoted, code_contested, code_deferred, code_loss = promote(
+                code_findings, topic_context
+            )
+        else:
+            code_promoted, code_contested, code_deferred, code_loss = [], [], [], []
+
+        # Merge both lanes — anchor-aware dedup prevents cross-lane false collisions
+        all_promoted = thread_promoted + list(code_promoted)
+        all_contested = thread_contested + list(code_contested)
+        all_deferred = thread_deferred + list(code_deferred)
+        all_loss = thread_loss + list(code_loss)
 
     else:
-        # THREAD LANE — clause cues, surface acts, prose perception
+        # THREAD LANE ONLY — clause cues, surface acts, prose perception
         pipeline_result = run_pipeline_with_receipts(
             text, topic_context, turn_id=turn_id, actor=actor,
         )

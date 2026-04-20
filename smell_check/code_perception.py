@@ -30,19 +30,28 @@ def detect_input_kind(text: str) -> str:
     """Detect whether input is code, diff, thread, or mixed. Pure.
 
     Returns: "python_source", "diff", "thread", or "mixed"
+
+    Mixed: input contains both code blocks and prose (e.g., PR review
+    with inline code, commit message + diff, review comments + snippets).
     """
     lines = text.strip().split("\n")
     if not lines:
         return "thread"
 
     # Diff detection
-    diff_signals = sum(1 for l in lines[:20] if l.startswith(("diff --git", "+++", "---", "@@", "+", "-")))
+    diff_signals = sum(1 for l in lines[:20] if l.startswith(("diff --git", "+++", "---", "@@")))
     if diff_signals > len(lines[:20]) * 0.3:
+        # Check if there's also prose around the diff
+        prose_signals = sum(1 for l in lines if l.strip() and not l.startswith((
+            "diff ", "+++", "---", "@@", "+", "-", "index ", "Binary "
+        )) and any(c.isalpha() for c in l))
+        if prose_signals > 3:
+            return "mixed"
         return "diff"
 
     # Python source detection
     code_signals = 0
-    for line in lines[:30]:
+    for line in lines[:50]:
         stripped = line.strip()
         if stripped.startswith(("def ", "class ", "import ", "from ", "if __name__")):
             code_signals += 3
@@ -53,21 +62,107 @@ def detect_input_kind(text: str) -> str:
         elif re.match(r"^\s*\w+\s*=\s*", stripped):
             code_signals += 1
 
-    if code_signals > len(lines[:30]) * 0.4:
+    # Thread/conversation signals — but NOT from lines that look like
+    # code comments, docstrings, or indented code context
+    thread_signals = 0
+    thread_cues = ("we decided", "not sure", "someone needs", "said", "agreed",
+                   "i think", "looks good", "lgtm", "nit:", "should we",
+                   "needs review", "approve", "changes requested")
+    in_docstring = False
+    for l in lines:
+        stripped = l.strip()
+        # Track docstring boundaries
+        if '"""' in stripped or "'''" in stripped:
+            in_docstring = not in_docstring
+            continue
+        if in_docstring:
+            continue
+        # Skip comments and indented code
+        if stripped.startswith("#") or stripped.startswith(("def ", "class ", "import ", "from ")):
+            continue
+        if l.startswith(("    ", "\t")):
+            continue
+        if any(cue in l.lower() for cue in thread_cues):
+            thread_signals += 1
+
+    # Mixed: both code and thread signals present
+    if code_signals > 5 and thread_signals >= 2:
+        return "mixed"
+
+    if code_signals > len(lines[:50]) * 0.3:
         return "python_source"
 
-    # Check for conversation signals
-    thread_signals = sum(1 for l in lines[:20] if any(
-        cue in l.lower() for cue in ("we decided", "not sure", "someone needs", "said", "agreed", "?")
-    ))
     if thread_signals > 0:
         return "thread"
 
-    # Default: if it looks like code but we're not sure, try code first
     if code_signals > 3:
         return "python_source"
 
     return "thread"
+
+
+def split_mixed_input(text: str) -> dict[str, list[str]]:
+    """Split mixed input into code segments and prose segments. Pure.
+
+    Returns {"code": [...], "prose": [...]} where each list contains
+    text segments of that kind.
+    """
+    lines = text.split("\n")
+    segments: dict[str, list[str]] = {"code": [], "prose": []}
+    current_kind = "prose"
+    current_lines: list[str] = []
+
+    # Fenced code block detection
+    in_fence = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Fenced code blocks
+        if stripped.startswith("```"):
+            if in_fence:
+                # End of code block
+                current_lines.append(line)
+                segments["code"].append("\n".join(current_lines))
+                current_lines = []
+                in_fence = False
+                current_kind = "prose"
+                continue
+            else:
+                # Start of code block
+                if current_lines:
+                    segments[current_kind].append("\n".join(current_lines))
+                current_lines = [line]
+                in_fence = True
+                current_kind = "code"
+                continue
+
+        if in_fence:
+            current_lines.append(line)
+            continue
+
+        # Heuristic: is this line code or prose?
+        is_code_line = (
+            stripped.startswith(("def ", "class ", "import ", "from ", "if ", "else:", "elif ",
+                                "for ", "while ", "return ", "yield ", "raise ", "try:", "except",
+                                "with ", "    ", "\t"))
+            or stripped.startswith(("@", ">>>"))
+            or (stripped.startswith(("diff --git", "+++", "---", "@@", "+", "-")) and not stripped.startswith("- "))
+        )
+
+        new_kind = "code" if is_code_line else "prose"
+
+        if new_kind != current_kind and current_lines:
+            segments[current_kind].append("\n".join(current_lines))
+            current_lines = []
+
+        current_kind = new_kind
+        current_lines.append(line)
+
+    if current_lines:
+        segments[current_kind].append("\n".join(current_lines))
+
+    return segments
 
 
 # ---------------------------------------------------------------------------
