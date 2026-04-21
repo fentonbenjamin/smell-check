@@ -128,6 +128,31 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 "where": where,
                 "drillback": drillback,
             })
+        elif finding_kind == "guard_removed":
+            removed = claim.get("_removed_guards", [])
+            findings.append({
+                "judgment": f"Guard removed: {text}",
+                "because": f"Validation or safety check was removed: {', '.join(removed[:2])}" if removed else "if/raise/assert lines removed without replacement.",
+                "where": where,
+                "what_to_do": "Verify the guard removal was intentional and safe.",
+                "drillback": drillback,
+            })
+        elif finding_kind == "error_path_changed":
+            findings.append({
+                "judgment": f"Error handling changed: {text}",
+                "because": "try/except/raise/logging lines were modified.",
+                "where": where,
+                "what_to_do": "Review the error path for correctness.",
+                "drillback": drillback,
+            })
+        elif finding_kind == "test_gap":
+            findings.append({
+                "judgment": f"No test delta: {text}",
+                "because": "Behavior changed but no test file was modified in this diff.",
+                "where": where,
+                "what_to_do": "Add or update tests for the changed behavior.",
+                "drillback": drillback,
+            })
         elif finding_kind in ("significant_removal", "large_addition", "file_change"):
             findings.append({
                 "judgment": text,

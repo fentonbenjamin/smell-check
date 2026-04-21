@@ -370,42 +370,176 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
 
 
 # ---------------------------------------------------------------------------
-# Diff perception (minimal v1)
+# Diff perception
 # ---------------------------------------------------------------------------
 
-def diff_to_findings(diff_text: str) -> list[dict[str, Any]]:
-    """Extract basic structural signals from a diff. Pure.
+# Structural patterns to detect in removed/added lines
+_GUARD_PATTERNS = re.compile(
+    r"^\s*if\s+.+:\s*$"
+    r"|^\s*raise\s+"
+    r"|^\s*assert\s+"
+    r"|^\s*if\s+not\s+"
+, re.MULTILINE)
 
-    Minimal v1: detect which files changed, added/removed line counts,
-    and flag obvious structural signals.
+_ERROR_HANDLING_PATTERNS = re.compile(
+    r"^\s*try\s*:"
+    r"|^\s*except\s+"
+    r"|^\s*finally\s*:"
+    r"|^\s*raise\s+"
+    r"|^\s*logging\.\w+\("
+    r"|^\s*logger\.\w+\("
+, re.MULTILINE)
+
+_TEST_FILE_PATTERNS = re.compile(r"test_|_test\.py|tests/|spec_|_spec\.py")
+
+
+def diff_to_findings(diff_text: str) -> list[dict[str, Any]]:
+    """Extract structural signals from a diff. Pure.
+
+    Detects:
+    - guard_removed: if/raise/assert removed without replacement
+    - error_path_changed: try/except/raise/logging changed
+    - test_gap: behavior changed but no test file in the diff
+    - significant_removal: large net deletion
+    - large_addition: large net addition
+    - file_change: basic file modification
     """
     findings = []
-    current_file = None
-    added = 0
-    removed = 0
+    files = _parse_diff_files(diff_text)
 
-    for line in diff_text.split("\n"):
-        if line.startswith("diff --git"):
-            if current_file and (added + removed) > 0:
-                findings.append(_diff_file_finding(current_file, added, removed))
-            match = re.search(r"b/(.+)$", line)
-            current_file = match.group(1) if match else "unknown"
-            added = 0
-            removed = 0
-        elif line.startswith("+") and not line.startswith("+++"):
-            added += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            removed += 1
+    has_test_file = any(_TEST_FILE_PATTERNS.search(f["filename"]) for f in files)
+    has_behavior_change = False
 
-    if current_file and (added + removed) > 0:
-        findings.append(_diff_file_finding(current_file, added, removed))
+    for f in files:
+        filename = f["filename"]
+        added_lines = f["added_lines"]
+        removed_lines = f["removed_lines"]
+        added_count = len(added_lines)
+        removed_count = len(removed_lines)
+
+        where = {"file": filename, "added": added_count, "removed": removed_count}
+
+        # Guard removal: if/raise/assert removed without corresponding addition
+        removed_guards = [l for l in removed_lines if _GUARD_PATTERNS.search(l)]
+        added_guards = [l for l in added_lines if _GUARD_PATTERNS.search(l)]
+        if removed_guards and len(removed_guards) > len(added_guards):
+            net_removed = len(removed_guards) - len(added_guards)
+            findings.append({
+                "text": f"{filename}: {net_removed} guard/validation line{'s' if net_removed != 1 else ''} removed",
+                "mother_type": CONSTRAINT,
+                "subtype": "guard_removed",
+                "confidence": 0.85,
+                "claim_type": "constraint",
+                "clause_id": f"diff_guard_{filename}",
+                "_finding_kind": "guard_removed",
+                "_evidence_basis": "diff",
+                "_where": where,
+                "_removed_guards": [l.strip() for l in removed_guards[:3]],
+            })
+
+        # Error path changed: try/except/raise/logging touched
+        removed_error = [l for l in removed_lines if _ERROR_HANDLING_PATTERNS.search(l)]
+        added_error = [l for l in added_lines if _ERROR_HANDLING_PATTERNS.search(l)]
+        if removed_error or added_error:
+            findings.append({
+                "text": f"{filename}: error handling changed (-{len(removed_error)}/+{len(added_error)} error-path lines)",
+                "mother_type": UNCERTAINTY,
+                "subtype": "error_path_changed",
+                "confidence": 0.7,
+                "claim_type": "observation",
+                "clause_id": f"diff_error_{filename}",
+                "_finding_kind": "error_path_changed",
+                "_evidence_basis": "diff",
+                "_where": where,
+            })
+
+        # Track whether this is a behavior change (not just a test or doc)
+        if not _TEST_FILE_PATTERNS.search(filename) and added_count + removed_count > 2:
+            has_behavior_change = True
+
+        # Size-based signals
+        if removed_count > added_count * 2 and removed_count > 5:
+            findings.append({
+                "text": f"{filename}: significant removal ({removed_count} lines removed, {added_count} added)",
+                "mother_type": CONSTRAINT,
+                "subtype": "significant_removal",
+                "confidence": 0.6,
+                "claim_type": "observation",
+                "clause_id": f"diff_size_{filename}",
+                "_finding_kind": "significant_removal",
+                "_evidence_basis": "diff",
+                "_where": where,
+            })
+        elif added_count > removed_count * 3 and added_count > 10:
+            findings.append({
+                "text": f"{filename}: large addition ({added_count} lines added)",
+                "mother_type": UNCERTAINTY,
+                "subtype": "large_addition",
+                "confidence": 0.5,
+                "claim_type": "observation",
+                "clause_id": f"diff_size_{filename}",
+                "_finding_kind": "large_addition",
+                "_evidence_basis": "diff",
+                "_where": where,
+            })
+
+    # Test gap: behavior changed but no test file touched
+    if has_behavior_change and not has_test_file:
+        behavior_files = [f["filename"] for f in files
+                         if not _TEST_FILE_PATTERNS.search(f["filename"])
+                         and len(f["added_lines"]) + len(f["removed_lines"]) > 2]
+        if behavior_files:
+            findings.append({
+                "text": f"Behavior changed in {', '.join(behavior_files[:3])} but no test file in this diff",
+                "mother_type": UNCERTAINTY,
+                "subtype": "test_gap",
+                "confidence": 0.75,
+                "claim_type": "observation",
+                "clause_id": "diff_test_gap",
+                "_finding_kind": "test_gap",
+                "_evidence_basis": "diff",
+                "_where": {"files": behavior_files},
+            })
 
     return findings
 
 
+def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
+    """Parse a unified diff into per-file structures. Pure."""
+    files = []
+    current_file = None
+    added_lines: list[str] = []
+    removed_lines: list[str] = []
+
+    for line in diff_text.split("\n"):
+        if line.startswith("diff --git"):
+            if current_file:
+                files.append({
+                    "filename": current_file,
+                    "added_lines": added_lines,
+                    "removed_lines": removed_lines,
+                })
+            match = re.search(r"b/(.+)$", line)
+            current_file = match.group(1) if match else "unknown"
+            added_lines = []
+            removed_lines = []
+        elif line.startswith("+") and not line.startswith("+++"):
+            added_lines.append(line[1:])  # strip the leading +
+        elif line.startswith("-") and not line.startswith("---"):
+            removed_lines.append(line[1:])  # strip the leading -
+
+    if current_file:
+        files.append({
+            "filename": current_file,
+            "added_lines": added_lines,
+            "removed_lines": removed_lines,
+        })
+
+    return files
+
+
 def _diff_file_finding(filename: str, added: int, removed: int) -> dict[str, Any]:
-    """Create a finding for a changed file in a diff."""
-    total = added + removed
+    """Create a finding for a changed file in a diff. Legacy helper."""
     if removed > added * 2:
         judgment = f"{filename}: significant removal ({removed} lines removed, {added} added)"
         mother_type = CONSTRAINT
