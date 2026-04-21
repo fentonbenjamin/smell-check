@@ -1,0 +1,15 @@
+[project]
+name = "smell-check"
+version = "0.1.0"
+description = "Smell detection for code"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "mcp>=1.2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
