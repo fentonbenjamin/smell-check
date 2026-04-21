@@ -777,17 +777,30 @@ def analyze_source(source: str, filename: str = "<unknown>", repo_modules: set[s
 
     # Semantic pattern detection — trust boundary violations
     # These catch issues that aren't about impurity but about wrong trust
+    # IMPORTANT: only match against executable code, NOT docstrings or comments
     for f in functions:
-        doc = f.get("docstring", "").lower()
         name_lower = f["name"].lower()
-        source = f.get("source", "").lower()
+        func_source = f.get("source", "")
+
+        # Strip the docstring from the source before matching
+        # The docstring is the first string literal in the function body
+        doc = f.get("docstring", "")
+        code_only = func_source
+        if doc:
+            # Remove the docstring from the source for matching purposes
+            code_only = func_source.replace(doc, "", 1)
+        # Also strip comment lines
+        code_lines = [l for l in code_only.split("\n") if not l.strip().startswith("#")]
+        code_only = "\n".join(code_lines).lower()
 
         # Pattern: function discards or ignores security-critical data
-        discard_signals = ["silently discard", "never used", "not used", "dropped",
-                          "ignored", "skip", "without verif", "never verif",
+        # Only match in executable code, not in docstrings or comments
+        discard_signals = ["silently discard", "never used", "not used",
+                          "without verif", "never verif",
                           "not verif", "no signature", "no crypto"]
+        # Removed "skip", "dropped", "ignored" — too broad, fires on harmless prose
         for signal in discard_signals:
-            if signal in doc or signal in source:
+            if signal in code_only:
                 violations.append({
                     "type": "trust_boundary_violation",
                     "message": f"Function '{f['name']}' may discard or skip security-critical verification ({signal})",
@@ -804,7 +817,7 @@ def analyze_source(source: str, filename: str = "<unknown>", repo_modules: set[s
         verify_context = "verify" in name_lower or "valid" in name_lower or "auth" in name_lower
         if verify_context:
             for signal in untrusted_steering:
-                if signal in source:
+                if signal in code_only:
                     violations.append({
                         "type": "trust_boundary_violation",
                         "message": f"Verification function '{f['name']}' may use untrusted input to steer verification logic ({signal})",

@@ -169,7 +169,20 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 "drillback": drillback,
             })
         elif mother_type == "CONTRACT":
-            if _looks_actionable(text):
+            # Check if the tagger already classified this as a decision
+            surface_act = claim.get("epistemic_event", "")
+            is_decision = any(cue in text.lower() for cue in (
+                "we decided", "we agreed", "decided to", "the plan is",
+                "confirmed", "locked in", "set for",
+            ))
+            if is_decision:
+                stable_points.append({
+                    "judgment": f"Decided: {text}",
+                    "because": "Expressed as a decision or agreement.",
+                    "where": where,
+                    "drillback": drillback,
+                })
+            elif _looks_actionable(text):
                 findings.append({
                     "judgment": f"Action item: {text}",
                     "because": "This reads as a commitment to do something.",
