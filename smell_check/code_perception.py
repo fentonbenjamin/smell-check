@@ -41,10 +41,21 @@ def detect_input_kind(text: str) -> str:
     # Diff detection
     diff_signals = sum(1 for l in lines[:20] if l.startswith(("diff --git", "+++", "---", "@@")))
     if diff_signals > len(lines[:20]) * 0.3:
-        # Check if there's also prose around the diff
-        prose_signals = sum(1 for l in lines if l.strip() and not l.startswith((
-            "diff ", "+++", "---", "@@", "+", "-", "index ", "Binary "
-        )) and any(c.isalpha() for c in l))
+        # Check if there's also prose around the diff.
+        # Context lines in unified diffs start with a space — they're part
+        # of the diff, not prose. Also skip empty lines and hunk content.
+        in_hunk = False
+        prose_signals = 0
+        for l in lines:
+            if l.startswith("diff --git") or l.startswith("@@"):
+                in_hunk = True
+                continue
+            if l.startswith(("+++", "---", "index ", "Binary ")):
+                continue
+            if in_hunk and (l.startswith("+") or l.startswith("-") or l.startswith(" ") or l == ""):
+                continue  # hunk content or context line
+            if not in_hunk and l.strip() and any(c.isalpha() for c in l):
+                prose_signals += 1
         if prose_signals > 3:
             return "mixed"
         return "diff"
