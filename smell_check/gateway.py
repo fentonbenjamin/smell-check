@@ -37,6 +37,20 @@ PORT = int(os.environ.get("GATEWAY_PORT", "8800"))
 
 mcp = FastMCP(
     "Smell Check",
+    host="0.0.0.0",
+    port=int(os.environ.get("PORT", "8800")),
+    transport_security={
+        "enable_dns_rebinding_protection": True,
+        "allowed_hosts": [
+            "127.0.0.1:*", "localhost:*", "[::1]:*",
+            "smell-check.fly.dev", "smell-check.fly.dev:*",
+            "*.fly.dev", "*.fly.dev:*",
+        ],
+        "allowed_origins": [
+            "http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*",
+            "https://smell-check.fly.dev", "https://*.fly.dev",
+        ],
+    },
     instructions=(
         "Smell Check analyzes threads, conversations, and code for what's actually being said. "
         "It classifies every claim into governance types, judges what's decided vs uncertain "
