@@ -50,7 +50,7 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
         source_span = claim.get("source_span")
         clause_id = claim.get("clause_id", "")
         if code_where:
-            where = code_where
+            where = dict(code_where)  # copy to avoid mutating shared dict
             where["text"] = text
         else:
             where = {
