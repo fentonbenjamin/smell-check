@@ -257,6 +257,65 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
                 "_where": where,
             })
 
+    # Process exception safety signals
+    for func in analysis.get("functions", []):
+        name = func.get("name", "?")
+        for sig in func.get("exception_signals", []):
+            sig_line = sig.get("line", func.get("lineno", 0))
+            where = {"file": filename, "line": sig_line, "function": name}
+            findings.append({
+                "text": f"{name}:{sig_line} — {sig['message']}",
+                "mother_type": CONSTRAINT,
+                "subtype": sig["type"],
+                "confidence": 0.85,
+                "claim_type": "constraint",
+                "source_span": (sig_line, sig_line),
+                "clause_id": f"exc_{name}_{sig_line}",
+                "_finding_kind": "exception_safety",
+                "_evidence_basis": "ast",
+                "_where": where,
+            })
+
+    # Process guard detection — guards are stable points (validation exists)
+    for func in analysis.get("functions", []):
+        name = func.get("name", "?")
+        guards = func.get("guards", [])
+        if guards:
+            guard_lines = [g["line"] for g in guards]
+            where = {"file": filename, "line": guards[0]["line"], "function": name}
+            findings.append({
+                "text": f"{name} has {len(guards)} validation guard{'s' if len(guards) != 1 else ''}",
+                "mother_type": WITNESS,
+                "subtype": "validation_guard",
+                "confidence": 0.75,
+                "claim_type": "guarantee",
+                "source_span": (guards[0]["line"], guards[-1]["line"]),
+                "clause_id": f"guard_{name}",
+                "_finding_kind": "guard_present",
+                "_evidence_basis": "ast",
+                "_where": where,
+            })
+
+    # Process global state mutations
+    for func in analysis.get("functions", []):
+        name = func.get("name", "?")
+        mutations = func.get("global_mutations", [])
+        for mut in mutations:
+            mut_line = mut.get("line", func.get("lineno", 0))
+            where = {"file": filename, "line": mut_line, "function": name}
+            findings.append({
+                "text": f"{name} mutates global state: {mut['name']}",
+                "mother_type": CONSTRAINT,
+                "subtype": "global_mutation",
+                "confidence": 0.9,
+                "claim_type": "constraint",
+                "source_span": (mut_line, mut_line),
+                "clause_id": f"global_{name}_{mut['name']}",
+                "_finding_kind": "global_mutation",
+                "_evidence_basis": "ast",
+                "_where": where,
+            })
+
     # Process violations — only those with structural (AST) basis
     for v in analysis.get("violations", []):
         vtype = v.get("type", "unknown")

@@ -235,6 +235,94 @@ def _analyze_function(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
 
     is_pure = len(impurity_signals) == 0 and not has_global
 
+    # --- Exception safety analysis ---
+    exception_signals = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.ExceptHandler):
+            handler_line = getattr(child, "lineno", lineno)
+            # Bare except (catches everything including SystemExit, KeyboardInterrupt)
+            if child.type is None:
+                exception_signals.append({
+                    "type": "bare_except",
+                    "line": handler_line,
+                    "message": "Bare except catches all exceptions including SystemExit",
+                })
+            # except Exception: pass (silent swallow)
+            elif child.type and _node_name(child.type) in ("Exception", "BaseException"):
+                # Check if body is just 'pass' or empty
+                if len(child.body) == 1 and isinstance(child.body[0], ast.Pass):
+                    exception_signals.append({
+                        "type": "silent_exception",
+                        "line": handler_line,
+                        "message": f"Silently swallows {_node_name(child.type)} — errors will be invisible",
+                    })
+                # Check if body is just 'continue'
+                elif len(child.body) == 1 and isinstance(child.body[0], ast.Continue):
+                    exception_signals.append({
+                        "type": "silent_exception",
+                        "line": handler_line,
+                        "message": f"Silently continues past {_node_name(child.type)}",
+                    })
+
+    # Unguarded deserialize: json.loads/yaml.load without try/except
+    _DESERIALIZE_CALLS = {"json.loads", "json.load", "yaml.load", "yaml.safe_load",
+                          "pickle.loads", "pickle.load", "ast.literal_eval"}
+    deserialize_calls = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            call_name = _get_call_name(child)
+            if call_name in _DESERIALIZE_CALLS:
+                # Check if this call is inside a try block
+                in_try = False
+                for parent in ast.walk(node):
+                    if isinstance(parent, ast.Try):
+                        for stmt in ast.walk(parent):
+                            if stmt is child:
+                                in_try = True
+                                break
+                if not in_try:
+                    deserialize_calls.append({
+                        "call": call_name,
+                        "line": getattr(child, "lineno", lineno),
+                    })
+
+    if deserialize_calls:
+        for dc in deserialize_calls:
+            exception_signals.append({
+                "type": "unguarded_deserialize",
+                "line": dc["line"],
+                "message": f"{dc['call']} called without try/except — parse errors will crash",
+            })
+
+    # --- Guard detection ---
+    # Guards are if/raise patterns that validate inputs
+    guards = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.If):
+            # Check if the if-body contains a raise
+            for body_node in child.body:
+                if isinstance(body_node, ast.Raise):
+                    guard_line = getattr(child, "lineno", lineno)
+                    # Try to get the condition text
+                    cond_text = ast.get_source_segment(source, child.test) or ""
+                    guards.append({
+                        "type": "validation_guard",
+                        "line": guard_line,
+                        "condition": cond_text[:80],
+                    })
+
+    # --- Global state mutation detection ---
+    # Track module-level assignments that could be mutated
+    global_mutations = []
+    if has_global:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Global):
+                for gname in child.names:
+                    global_mutations.append({
+                        "name": gname,
+                        "line": getattr(child, "lineno", lineno),
+                    })
+
     # Extract source text for the function
     source_lines = source.splitlines()
     func_source = "\n".join(source_lines[lineno - 1:end_lineno]) if end_lineno else ""
@@ -256,8 +344,20 @@ def _analyze_function(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
         "calls": calls,
         "body_imports": body_imports,
         "impurity_signals": impurity_signals,
+        "exception_signals": exception_signals,
+        "guards": guards,
+        "global_mutations": global_mutations,
         "source": func_source,
     }
+
+
+def _node_name(node) -> str:
+    """Get the name from a Name or Attribute node. Pure."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
 
 
 def _get_call_name(node: ast.Call) -> str | None:

@@ -98,6 +98,29 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 "what_to_do": "Verify the dependency source.",
                 "drillback": drillback,
             })
+        elif finding_kind == "exception_safety":
+            findings.append({
+                "judgment": f"{_fn_name(where)}: {_violation_text(text)}",
+                "because": "Exception handling issue detected by AST analysis.",
+                "where": where,
+                "what_to_do": "Add proper error handling or make the exception handling explicit.",
+                "drillback": drillback,
+            })
+        elif finding_kind == "guard_present":
+            stable_points.append({
+                "judgment": f"{_fn_name(where)} {text.split(' has ', 1)[1] if ' has ' in text else 'has validation'}",
+                "because": "Input validation guards detected by AST.",
+                "where": where,
+                "drillback": drillback,
+            })
+        elif finding_kind == "global_mutation":
+            findings.append({
+                "judgment": f"{_fn_name(where)} mutates global state",
+                "because": "Uses 'global' keyword — shared mutable state across calls.",
+                "where": where,
+                "what_to_do": "Consider passing state explicitly instead of using globals.",
+                "drillback": drillback,
+            })
         elif finding_kind == "purity":
             stable_points.append({
                 "judgment": f"{_fn_name(where)} is structurally pure",
