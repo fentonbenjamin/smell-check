@@ -308,6 +308,65 @@ document.getElementById('input').addEventListener('keydown',e=>{if(e.key==='Ente
 # Main
 # ---------------------------------------------------------------------------
 
+def _build_combined_app(port: int):
+    """Build a combined ASGI app: MCP on /mcp, HTTP API on everything else."""
+    from contextlib import asynccontextmanager
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse, HTMLResponse
+    from starlette.routing import Route, Mount
+
+    # Get the MCP ASGI app from FastMCP
+    mcp_app = mcp.streamable_http_app()
+
+    async def health(request: Request):
+        m = measure_chamber()
+        return JSONResponse({"status": "ok", "chamber_hash": m["chamber_hash"][:16] + "..."})
+
+    async def analyze(request: Request):
+        body = await request.json()
+        text = body.get("text", "")
+        if not text:
+            return JSONResponse({"error": "provide 'text'"}, status_code=400)
+        topic = body.get("topic", "default")
+        try:
+            result = smell_check(text, topic=topic)
+            return JSONResponse(result, media_type="application/json")
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def verify(request: Request):
+        body = await request.json()
+        if "custody_record" in body and "boundary_attestation" not in body:
+            body = body["custody_record"]
+        try:
+            result = verify_custody(body)
+            return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def home(request: Request):
+        return HTMLResponse(_CONSUMER_PAGE)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with mcp.session_manager.run():
+            yield
+
+    app = Starlette(
+        routes=[
+            Route("/health", health, methods=["GET"]),
+            Route("/threads/analyze", analyze, methods=["POST"]),
+            Route("/threads/verify", verify, methods=["POST"]),
+            Route("/", home, methods=["GET"]),
+            Mount("", app=mcp_app),
+        ],
+        lifespan=lifespan,
+    )
+
+    return app
+
+
 def main():
     mode = "http"
     port = PORT
@@ -315,37 +374,28 @@ def main():
     for i, arg in enumerate(sys.argv):
         if arg == "--stdio":
             mode = "stdio"
-        elif arg == "--mcp":
-            mode = "mcp-http"
         elif arg == "--port" and i + 1 < len(sys.argv):
             port = int(sys.argv[i + 1])
 
     if mode == "stdio":
         # MCP over stdio — for Claude Code local config
-        print("Receipted MCP server (stdio)", file=sys.stderr)
+        print("Smell Check MCP server (stdio)", file=sys.stderr)
         mcp.run(transport="stdio")
 
-    elif mode == "mcp-http":
-        # MCP over streamable HTTP — for Messages API connector
-        print(f"Receipted MCP server (HTTP) on port {port}", file=sys.stderr)
-        os.environ["FASTMCP_PORT"] = str(port)
-        mcp.run(transport="streamable-http")
-
     else:
-        # HTTP face — for iOS app, web clients, curl
-        # Also start MCP stdio listener in background for local Claude Code
-        ServerClass, HandlerClass = _build_http_app()
-        server = ServerClass(("0.0.0.0", port), HandlerClass)
+        # Combined server: HTTP API + MCP streamable HTTP on same port
+        # HTTP: GET /, GET /health, POST /threads/analyze, POST /threads/verify
+        # MCP:  /mcp (streamable HTTP MCP endpoint)
+        import uvicorn
+        app = _build_combined_app(port)
 
-        print(f"Receipted gateway on http://localhost:{port}")
-        print(f"  HTTP: POST /threads/analyze, GET /health, GET /")
-        print(f"  MCP:  use --stdio for Claude Code, --mcp for HTTP MCP")
+        print(f"Smell Check on http://localhost:{port}")
+        print(f"  HTTP: GET /, POST /threads/analyze, POST /threads/verify")
+        print(f"  MCP:  http://localhost:{port}/mcp")
+        print(f"  stdio: use --stdio for Claude Code local")
         print()
 
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("\nStopped.")
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 
 if __name__ == "__main__":
