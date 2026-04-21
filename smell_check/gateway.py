@@ -81,7 +81,15 @@ def smell_check(
         "findings": smell["findings"],
         "stable_points": smell["stable_points"],
         "open_questions": smell["open_questions"],
-        # Layer 2: Verification
+        # Layer 2: Receipt status
+        "receipt_status": {
+            "wall": verification["wall_state"],
+            "valid": verification["valid"],
+            "checks": verification["checks_performed"],
+            "perception_mode": verification["perception_mode"],
+            "execution_class": verification["execution_class"],
+        },
+        # Legacy key (backward compat)
         "verification": {
             "valid": verification["valid"],
             "checks": verification["checks_performed"],

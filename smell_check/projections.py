@@ -69,36 +69,39 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
         }
 
         finding_kind = claim.get("_finding_kind", "")
+        evidence_basis = claim.get("_evidence_basis", "")
+        signals = claim.get("_signals", [])
 
         # Code-specific rendering by finding kind (structural, not prose)
         if finding_kind == "impurity":
+            signal_detail = f": {', '.join(signals)}" if signals else ""
             findings.append({
-                "judgment": f"Impure function: {text}",
-                "because": "This function has side effects or I/O operations.",
+                "judgment": f"{_fn_name(where)} has side effects{signal_detail}",
+                "because": f"AST analysis found I/O or impure operations in this function.",
                 "where": where,
                 "what_to_do": "Review whether the impurity is intentional.",
                 "drillback": drillback,
             })
         elif finding_kind == "violation":
             findings.append({
-                "judgment": f"Violation: {text}",
-                "because": "Structural analysis found a constraint violation or contract mismatch.",
+                "judgment": f"{_fn_name(where)}: {_violation_text(text)}",
+                "because": "Structural analysis found a constraint violation.",
                 "where": where,
                 "what_to_do": "Review the function's behavior vs its contract.",
                 "drillback": drillback,
             })
         elif finding_kind == "provenance_gap":
             findings.append({
-                "judgment": f"Unstamped dependency: {text}",
-                "because": "This import appears external to the repo with no provenance.",
+                "judgment": f"External dependency with no provenance: {text}",
+                "because": "This import appears external to the repo.",
                 "where": where,
                 "what_to_do": "Verify the dependency source.",
                 "drillback": drillback,
             })
         elif finding_kind == "purity":
             stable_points.append({
-                "judgment": f"Pure function: {text}",
-                "because": "No I/O, no side effects detected by AST analysis.",
+                "judgment": f"{_fn_name(where)} is structurally pure",
+                "because": "No I/O, no side effects, no global state detected by AST.",
                 "where": where,
                 "drillback": drillback,
             })
@@ -338,6 +341,22 @@ _ACTION_SIGNALS = frozenset({
     "pick up", "drop off", "confirm", "check",
     "remind", "update", "fix", "deploy", "ship",
 })
+
+
+def _fn_name(where: dict) -> str:
+    """Extract a clean function name from a where anchor."""
+    fn = where.get("function", "")
+    if fn:
+        return fn
+    return where.get("text", "unknown")[:30]
+
+
+def _violation_text(text: str) -> str:
+    """Clean up violation text for rendering."""
+    # Strip the "function:line — " prefix if present
+    if " — " in text:
+        return text.split(" — ", 1)[1]
+    return text
 
 
 def _looks_actionable(text: str) -> bool:

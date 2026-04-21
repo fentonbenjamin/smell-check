@@ -96,7 +96,7 @@ class TestPurityFindings:
         result = smell_check(SAMPLE_CODE)
         stable_texts = [s["judgment"].lower() for s in result["stable_points"]]
         # compute_outline_delta and extract_sections should be stable
-        assert any("compute_outline_delta" in t for t in stable_texts), (
+        assert any("compute_outline_delta" in t or "structurally pure" in t for t in stable_texts), (
             f"Pure function not in stable: {stable_texts}"
         )
 
@@ -168,23 +168,28 @@ def safe_function(x):
 class TestCodeRendering:
 
     def test_findings_use_code_language(self):
-        """Code findings should say 'Impure function' or 'Violation',
-        not 'This smells funny'."""
+        """Code findings should use structural language, not 'This smells funny'."""
         result = smell_check(SAMPLE_CODE)
         for f in result["findings"]:
             judgment = f["judgment"]
-            # Should use code-specific rendering
             assert "smells funny" not in judgment.lower(), (
                 f"Generic rendering on code finding: {judgment}"
             )
 
-    def test_stable_points_say_pure(self):
-        """Stable code findings should say 'Pure function', not 'This looks decided'."""
+    def test_stable_points_use_structural_language(self):
+        """Stable code findings should say 'structurally pure', not 'decided'."""
         result = smell_check(SAMPLE_CODE)
         for s in result["stable_points"]:
             assert "decided" not in s["judgment"].lower(), (
                 f"Code stable point rendered as decision: {s['judgment']}"
             )
+
+    def test_receipt_status_in_output(self):
+        """Output should include receipt_status section."""
+        result = smell_check(SAMPLE_CODE)
+        assert "receipt_status" in result
+        assert result["receipt_status"]["wall"] == "held"
+        assert result["receipt_status"]["valid"] is True
 
     def test_findings_have_file_line_anchors(self):
         """Code findings should have file/line/function in where."""

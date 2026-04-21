@@ -228,6 +228,7 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
 
         if not is_pure and impurity:
             signal_names = [s.get("call", s.get("attr", "?")) for s in impurity[:3]]
+            signal_lines = [s.get("line", lineno) for s in impurity[:3]]
             findings.append({
                 "text": f"{name} has impure operations: {', '.join(signal_names)}",
                 "mother_type": CONSTRAINT,
@@ -237,6 +238,9 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
                 "source_span": (lineno, lineno),
                 "clause_id": f"fn_{name}",
                 "_finding_kind": "impurity",
+                "_evidence_basis": "ast",
+                "_signals": signal_names,
+                "_signal_lines": signal_lines,
                 "_where": where,
             })
         elif is_pure:
@@ -249,16 +253,25 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
                 "source_span": (lineno, lineno),
                 "clause_id": f"fn_{name}",
                 "_finding_kind": "purity",
+                "_evidence_basis": "ast",
                 "_where": where,
             })
 
-    # Process violations
+    # Process violations — only those with structural (AST) basis
     for v in analysis.get("violations", []):
         vtype = v.get("type", "unknown")
         message = v.get("message", "")
         func_name = v.get("function", "module")
         lineno = v.get("line", 0)
         vmother = v.get("mother_type", CONSTRAINT)
+
+        # Skip violations that are just contract-inference heuristics
+        # without a concrete AST signal backing them
+        if vtype == "contract_mismatch" and not v.get("impurity_signals"):
+            # Contract mismatch from name-inference only — downrank
+            confidence = 0.5
+        else:
+            confidence = 0.95
 
         where = {
             "file": filename,
@@ -270,11 +283,12 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
             "text": f"{func_name}:{lineno} — {message}",
             "mother_type": vmother,
             "subtype": vtype,
-            "confidence": 0.95,
+            "confidence": confidence,
             "claim_type": "constraint" if vmother == CONSTRAINT else "fact",
             "source_span": (lineno, lineno),
             "clause_id": f"viol_{func_name}_{lineno}",
             "_finding_kind": "violation",
+            "_evidence_basis": "ast",
             "_where": where,
         })
 
