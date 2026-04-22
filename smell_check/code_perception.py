@@ -307,21 +307,32 @@ def analyzer_to_findings(source: str, filename: str = "<input>") -> list[dict[st
                 "_where": where,
             })
 
-    # Process global state mutations
+    # Process global state mutations (explicit and implicit)
     for func in analysis.get("functions", []):
         name = func.get("name", "?")
         mutations = func.get("global_mutations", [])
+        # Deduplicate by (name, variable) — don't report both explicit and implicit for same var
+        seen = set()
         for mut in mutations:
+            var_name = mut["name"]
+            if var_name in seen:
+                continue
+            seen.add(var_name)
             mut_line = mut.get("line", func.get("lineno", 0))
+            kind = mut.get("kind", "explicit")
             where = {"file": filename, "line": mut_line, "function": name}
+            if kind == "explicit":
+                msg = f"{name} mutates global state: {var_name}"
+            else:
+                msg = f"{name} mutates module-level {var_name}"
             findings.append({
-                "text": f"{name} mutates global state: {mut['name']}",
+                "text": msg,
                 "mother_type": CONSTRAINT,
                 "subtype": "global_mutation",
-                "confidence": 0.9,
+                "confidence": 0.85 if "implicit" in kind else 0.9,
                 "claim_type": "constraint",
                 "source_span": (mut_line, mut_line),
-                "clause_id": f"global_{name}_{mut['name']}",
+                "clause_id": f"global_{name}_{var_name}",
                 "_finding_kind": "global_mutation",
                 "_evidence_basis": "ast",
                 "_where": where,

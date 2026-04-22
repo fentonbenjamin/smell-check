@@ -115,10 +115,10 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
             })
         elif finding_kind == "global_mutation":
             findings.append({
-                "judgment": f"{_fn_name(where)} mutates global state",
-                "because": "Uses 'global' keyword — shared mutable state across calls.",
+                "judgment": text,
+                "because": "Module-level mutable state modified inside this function.",
                 "where": where,
-                "what_to_do": "Consider passing state explicitly instead of using globals.",
+                "what_to_do": "Consider passing state explicitly instead of mutating module-level objects.",
                 "drillback": drillback,
             })
         elif finding_kind == "purity":

@@ -158,14 +158,67 @@ def read_only():
 '''
 
 
+IMPLICIT_GLOBAL_CODE = '''
+CACHE = {}
+ITEMS = []
+REGISTRY = set()
+
+def remember(key, value):
+    CACHE[key] = value
+
+def add_item(x):
+    ITEMS.append(x)
+
+def register(name):
+    REGISTRY.add(name)
+
+def process(data, local_dict):
+    """Should NOT be flagged — mutates parameter, not module-level."""
+    local_dict["key"] = "value"
+    return data
+'''
+
+
 class TestGlobalState:
 
-    def test_detects_global_mutation(self):
+    def test_detects_explicit_global_mutation(self):
         funcs = extract_functions(GLOBAL_CODE)
         inc = next(f for f in funcs if f["name"] == "increment")
         mutations = inc.get("global_mutations", [])
         assert any(m["name"] == "_counter" for m in mutations), (
             f"Global mutation not detected: {mutations}"
+        )
+
+    def test_detects_implicit_dict_mutation(self):
+        funcs = extract_functions(IMPLICIT_GLOBAL_CODE)
+        remember = next(f for f in funcs if f["name"] == "remember")
+        mutations = remember.get("global_mutations", [])
+        assert any(m["name"] == "CACHE" for m in mutations), (
+            f"Implicit dict mutation not detected: {mutations}"
+        )
+
+    def test_detects_implicit_list_mutation(self):
+        funcs = extract_functions(IMPLICIT_GLOBAL_CODE)
+        add = next(f for f in funcs if f["name"] == "add_item")
+        mutations = add.get("global_mutations", [])
+        assert any(m["name"] == "ITEMS" for m in mutations), (
+            f"Implicit list mutation not detected: {mutations}"
+        )
+
+    def test_detects_implicit_set_mutation(self):
+        funcs = extract_functions(IMPLICIT_GLOBAL_CODE)
+        reg = next(f for f in funcs if f["name"] == "register")
+        mutations = reg.get("global_mutations", [])
+        assert any(m["name"] == "REGISTRY" for m in mutations), (
+            f"Implicit set mutation not detected: {mutations}"
+        )
+
+    def test_no_false_positive_on_parameter(self):
+        funcs = extract_functions(IMPLICIT_GLOBAL_CODE)
+        proc = next(f for f in funcs if f["name"] == "process")
+        mutations = proc.get("global_mutations", [])
+        assert len(mutations) == 0, (
+            f"False positive on parameter mutation: {mutations}"
         )
 
     def test_no_global_for_pure(self):

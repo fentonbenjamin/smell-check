@@ -97,19 +97,35 @@ def extract_functions(source: str, filename: str = "<unknown>") -> list[dict[str
     except SyntaxError:
         return []
 
+    # Collect module-level mutable names (top-level assignments)
+    # These are candidates for implicit mutation detection inside functions
+    module_level_names = set()
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    module_level_names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            module_level_names.add(node.target.id)
+
     functions = []
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
 
-        func = _analyze_function(node, source, filename)
+        func = _analyze_function(node, source, filename, module_level_names)
         functions.append(func)
 
     return functions
 
 
-def _analyze_function(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str, filename: str) -> dict[str, Any]:
+def _analyze_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    source: str,
+    filename: str,
+    module_level_names: set[str] | None = None,
+) -> dict[str, Any]:
     """Analyze a single function node. Pure."""
     # Basic info
     name = node.name
@@ -312,7 +328,7 @@ def _analyze_function(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
                     })
 
     # --- Global state mutation detection ---
-    # Track module-level assignments that could be mutated
+    # Track explicit global keyword usage
     global_mutations = []
     if has_global:
         for child in ast.walk(node):
@@ -321,7 +337,54 @@ def _analyze_function(node: ast.FunctionDef | ast.AsyncFunctionDef, source: str,
                     global_mutations.append({
                         "name": gname,
                         "line": getattr(child, "lineno", lineno),
+                        "kind": "explicit",
                     })
+
+    # Track implicit mutation of module-level mutable objects
+    # e.g., CACHE[key] = value, ITEMS.append(x), REGISTRY.update(...)
+    _MUTATING_METHODS = frozenset({
+        "append", "extend", "insert", "pop", "remove", "clear",
+        "update", "setdefault", "add", "discard",
+    })
+    if module_level_names:
+        # Collect function parameter names to exclude
+        param_names = {a.arg for a in node.args.args}
+        # Also exclude local assignments
+        local_names = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assign):
+                for t in child.targets:
+                    if isinstance(t, ast.Name):
+                        local_names.add(t.id)
+
+        for child in ast.walk(node):
+            child_line = getattr(child, "lineno", lineno)
+
+            # Subscript assignment: MODULE_VAR[key] = value
+            if isinstance(child, ast.Assign):
+                for target in child.targets:
+                    if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                        if target.value.id in module_level_names and target.value.id not in param_names and target.value.id not in local_names:
+                            global_mutations.append({
+                                "name": target.value.id,
+                                "line": child_line,
+                                "kind": "implicit_subscript",
+                            })
+
+            # Mutating method call: MODULE_VAR.append(x), MODULE_VAR.update(...)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+                if isinstance(child.func.value, ast.Name):
+                    obj_name = child.func.value.id
+                    method = child.func.attr
+                    if (obj_name in module_level_names
+                            and obj_name not in param_names
+                            and obj_name not in local_names
+                            and method in _MUTATING_METHODS):
+                        global_mutations.append({
+                            "name": obj_name,
+                            "line": child_line,
+                            "kind": f"implicit_{method}",
+                        })
 
     # Extract source text for the function
     source_lines = source.splitlines()
