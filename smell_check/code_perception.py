@@ -429,8 +429,9 @@ def diff_to_findings(diff_text: str) -> list[dict[str, Any]]:
     findings = []
     files = _parse_diff_files(diff_text)
 
-    has_test_file = any(_TEST_FILE_PATTERNS.search(f["filename"]) for f in files)
-    has_behavior_change = False
+    # Collect test files in the diff for per-file gap checking
+    test_files_in_diff = {f["filename"] for f in files if _TEST_FILE_PATTERNS.search(f["filename"])}
+    behavior_files = []
 
     for f in files:
         filename = f["filename"]
@@ -477,7 +478,7 @@ def diff_to_findings(diff_text: str) -> list[dict[str, Any]]:
 
         # Track whether this is a behavior change (not just a test or doc)
         if not _TEST_FILE_PATTERNS.search(filename) and added_count + removed_count > 2:
-            has_behavior_change = True
+            behavior_files.append(filename)
 
         # Size-based signals
         if removed_count > added_count * 2 and removed_count > 5:
@@ -505,14 +506,24 @@ def diff_to_findings(diff_text: str) -> list[dict[str, Any]]:
                 "_where": where,
             })
 
-    # Test gap: behavior changed but no test file touched
-    if has_behavior_change and not has_test_file:
-        behavior_files = [f["filename"] for f in files
-                         if not _TEST_FILE_PATTERNS.search(f["filename"])
-                         and len(f["added_lines"]) + len(f["removed_lines"]) > 2]
-        if behavior_files:
+    # Test gap: per-file check — does each changed behavior file have
+    # a corresponding test file in the diff? A random test_ui.py change
+    # should not suppress the gap for app.py.
+    if behavior_files:
+        uncovered = []
+        for bf in behavior_files:
+            # Check if any test file in the diff plausibly covers this file
+            base = bf.replace(".py", "").split("/")[-1]
+            has_relevant_test = any(
+                base in tf or tf.endswith(f"test_{base}.py")
+                for tf in test_files_in_diff
+            )
+            if not has_relevant_test:
+                uncovered.append(bf)
+
+        if uncovered:
             findings.append({
-                "text": f"Behavior changed in {', '.join(behavior_files[:3])} but no test file in this diff",
+                "text": f"Behavior changed in {', '.join(uncovered[:3])} with no relevant test delta",
                 "mother_type": UNCERTAINTY,
                 "subtype": "test_gap",
                 "confidence": 0.75,
@@ -520,7 +531,7 @@ def diff_to_findings(diff_text: str) -> list[dict[str, Any]]:
                 "clause_id": "diff_test_gap",
                 "_finding_kind": "test_gap",
                 "_evidence_basis": "diff",
-                "_where": {"files": behavior_files},
+                "_where": {"files": uncovered},
             })
 
     return findings

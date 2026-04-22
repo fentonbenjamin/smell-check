@@ -355,13 +355,24 @@ def process_through_chamber(
     # When perception_mode is "model_local" or "model_remote", the chamber
     # would need a distinct execution path (external model proposes, chamber
     # admits). That path doesn't exist yet. Claiming it ran would be dishonest.
-    _IMPLEMENTED_MODES = {"heuristic"}
-    if perception_mode not in _IMPLEMENTED_MODES:
+    _IMPLEMENTED_PERCEPTION_MODES = {"heuristic"}
+    if perception_mode not in _IMPLEMENTED_PERCEPTION_MODES:
         raise ValueError(
             f"perception_mode={perception_mode!r} is not yet implemented. "
-            f"Available modes: {sorted(_IMPLEMENTED_MODES)}. "
+            f"Available modes: {sorted(_IMPLEMENTED_PERCEPTION_MODES)}. "
             f"Model-assisted perception requires an external proposal path "
             f"that feeds pre-classified clauses into the chamber."
+        )
+
+    # Reject security modes that require evidence we can't produce.
+    # "soft" is source hashes only (what we have). "measured" and "attested"
+    # require process isolation or TEE quotes that don't exist yet.
+    _IMPLEMENTED_SECURITY_MODES = {"soft"}
+    if security_mode not in _IMPLEMENTED_SECURITY_MODES:
+        raise ValueError(
+            f"security_mode={security_mode!r} is not yet implemented. "
+            f"Available modes: {sorted(_IMPLEMENTED_SECURITY_MODES)}. "
+            f"'measured' requires process isolation. 'attested' requires TEE/enclave."
         )
 
     attestation = attest_boundary(

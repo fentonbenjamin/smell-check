@@ -249,7 +249,7 @@ def _analyze_function(
                         })
                         break
 
-    is_pure = len(impurity_signals) == 0 and not has_global
+    # is_pure computed after global_mutations (below)
 
     # --- Exception safety analysis ---
     exception_signals = []
@@ -349,13 +349,15 @@ def _analyze_function(
     if module_level_names:
         # Collect function parameter names to exclude
         param_names = {a.arg for a in node.args.args}
-        # Also exclude local assignments
+        # Also exclude local assignments (both regular and annotated)
         local_names = set()
         for child in ast.walk(node):
             if isinstance(child, ast.Assign):
                 for t in child.targets:
                     if isinstance(t, ast.Name):
                         local_names.add(t.id)
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                local_names.add(child.target.id)
 
         for child in ast.walk(node):
             child_line = getattr(child, "lineno", lineno)
@@ -385,6 +387,11 @@ def _analyze_function(
                             "line": child_line,
                             "kind": f"implicit_{method}",
                         })
+
+    # Compute purity AFTER global_mutations — implicit mutations make a function impure
+    is_pure = (len(impurity_signals) == 0
+               and not has_global
+               and len(global_mutations) == 0)
 
     # Extract source text for the function
     source_lines = source.splitlines()
