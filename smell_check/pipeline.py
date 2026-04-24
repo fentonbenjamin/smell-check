@@ -177,6 +177,56 @@ def analyze_thread(
         all_deferred = thread_deferred + list(code_deferred)
         all_loss = thread_loss + list(code_loss)
 
+    elif input_kind == "document":
+        # DOCUMENT LANE — specs, plans, critiques, bug reports
+        # The tagger runs but with heavy filtering:
+        # - suppress content inside code blocks (quoted examples, not assertions)
+        # - suppress file paths and schema references
+        # - require higher confidence (0.7) to promote
+        # - normative "should" in document prose is guidance, not an obligation
+        pipeline_result = run_pipeline_with_receipts(
+            text, topic_context, turn_id=turn_id, actor=actor,
+        )
+        tagger_result = pipeline_result["tagger_result"]
+        sieve_result = pipeline_result["sieve_result"]
+        classification = tagger_result["classification"]
+
+        clause_spans = {c.clause_id: c.span for c in classification.clauses}
+        tags_data = [
+            {
+                "event_type": t.event_type,
+                "confidence": t.confidence,
+                "span": t.span,
+                "clause_id": t.clause_id,
+                "source_span": clause_spans.get(t.clause_id),
+            }
+            for t in classification.tags
+        ]
+
+        # Filter tags: suppress quoted examples, paths, and low-confidence signals
+        filtered_tags = []
+        for tag in tags_data:
+            span = tag.get("span", "")
+            # Suppress content that looks like a quoted example or path
+            if _is_document_noise(span):
+                continue
+            # Require higher confidence for document mode
+            if tag.get("confidence", 0) < 0.7:
+                continue
+            filtered_tags.append(tag)
+
+        typed_units = tagger_to_typed_units(
+            text, filtered_tags, actor=actor, turn_id=turn_id,
+        )
+
+        # Re-promote with only the filtered units
+        if typed_units:
+            all_promoted, all_contested, all_deferred, all_loss = promote(
+                typed_units, topic_context
+            )
+        else:
+            all_promoted, all_contested, all_deferred, all_loss = [], [], [], []
+
     else:
         # THREAD LANE ONLY — clause cues, surface acts, prose perception
         pipeline_result = run_pipeline_with_receipts(
@@ -350,6 +400,44 @@ def _infer_keywords(text: str) -> set[str]:
     """
     from .sieve import _extract_keywords
     return _extract_keywords(text)
+
+
+def _is_document_noise(span: str) -> bool:
+    """Detect whether a tagger span is document noise rather than live signal.
+
+    Document noise includes:
+    - file paths (quality_corpus/families/...)
+    - schema field references (fixture_id, expected_semantic)
+    - code block content (```...```)
+    - directory tree fragments (├── ── └──)
+    - quoted examples from specs/critiques
+    - meta-language headers (Expected:, Observed:, Repro:)
+    """
+    s = span.strip()
+
+    # File paths
+    if re.match(r"^[\w./-]+\.(py|rs|json|md|yaml|toml|swift|txt)\b", s):
+        return True
+    if s.count("/") >= 3:
+        return True
+
+    # Schema/fixture field names
+    if re.match(r"^(fixture_id|expected_\w+|rubric_id|atlas_seed|gold_render|anti_gold)\b", s):
+        return True
+
+    # Directory tree fragments
+    if any(c in s for c in ("├──", "└──", "│  ")):
+        return True
+
+    # Code block markers
+    if s.startswith("```") or s.endswith("```"):
+        return True
+
+    # Very short fragments (likely bullet labels or field names)
+    if len(s) < 15 and ":" in s:
+        return True
+
+    return False
 
 
 def _unit_to_dict(unit: dict[str, Any]) -> dict[str, Any]:

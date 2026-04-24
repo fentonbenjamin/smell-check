@@ -103,13 +103,82 @@ def detect_input_kind(text: str) -> str:
     if code_signals > len(lines[:50]) * 0.3:
         return "python_source"
 
-    if thread_signals > 0:
+    if thread_signals > 0 and not _is_document(lines):
         return "thread"
 
     if code_signals > 3:
         return "python_source"
 
+    # Document detection: specs, plans, critiques, bug reports
+    if _is_document(lines):
+        return "document"
+
     return "thread"
+
+
+def _is_document(lines: list[str]) -> bool:
+    """Detect whether input is a document/spec/critique rather than a conversation.
+
+    Documents have:
+    - section headers (##, #, **bold headers**)
+    - bullet lists as structure
+    - long paragraphs (not short turn-taking)
+    - meta-language (Expected:, Observed:, Repro:, Fix:)
+    - no conversational turn markers (Alice:, Bob:, PM:)
+    """
+    if len(lines) < 5:
+        return False
+
+    section_headers = 0
+    bullet_items = 0
+    meta_labels = 0
+    turn_markers = 0
+    long_lines = 0
+    path_lines = 0
+
+    _meta_cues = (
+        "expected:", "observed:", "repro:", "fix:", "status:",
+        "context:", "goal:", "deliverable:", "recommendation:",
+        "likely fix", "bug:", "issue:", "requirement:",
+    )
+    _turn_pattern = re.compile(r"^[A-Z][a-z]+\s*:")  # "Alice:", "PM:", "Dev A:"
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("#", "##")):
+            section_headers += 1
+        if stripped.startswith(("- ", "* ", "1. ", "2. ", "3. ")):
+            bullet_items += 1
+        if any(stripped.lower().startswith(cue) for cue in _meta_cues):
+            meta_labels += 1
+        if _turn_pattern.match(stripped) and len(stripped) < 200:
+            turn_markers += 1
+        if len(stripped) > 120:
+            long_lines += 1
+        if "/" in stripped and any(stripped.count(c) > 2 for c in "/._"):
+            path_lines += 1
+
+    total = len(lines)
+
+    # Strong document signals
+    if section_headers >= 2 and bullet_items >= 3:
+        return True
+    if meta_labels >= 2:
+        return True
+    if section_headers >= 3:
+        return True
+
+    # Anti-signal: conversational turn-taking pattern
+    if turn_markers > total * 0.3:
+        return False
+
+    # Moderate document signals: long paragraphs + structured content
+    if long_lines > total * 0.2 and bullet_items >= 2:
+        return True
+    if bullet_items > total * 0.4 and section_headers >= 1:
+        return True
+
+    return False
 
 
 def split_mixed_input(text: str) -> dict[str, list[str]]:
