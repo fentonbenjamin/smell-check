@@ -194,17 +194,27 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 "drillback": drillback,
             })
         elif mother_type == "CONTRACT":
-            # Check if the tagger already classified this as a decision
+            lower = text.lower()
             surface_act = claim.get("epistemic_event", "")
-            is_decision = any(cue in text.lower() for cue in (
-                "we decided", "we agreed", "decided to", "the plan is",
-                "confirmed", "locked in", "set for",
-            ))
-            if is_decision:
-                stable_points.append({
-                    "judgment": f"Decided: {text}",
-                    "because": "Expressed as a decision or agreement.",
+
+            # Challenge check: text framed as a question about a prior decision
+            # is a challenge, not a stable point.
+            # "I thought we already decided on X" is challenging, not affirming.
+            _challenge_cues = (
+                "i thought we", "didn't we", "wasn't that",
+                "but we", "wait,", "hold on",
+            )
+            is_challenge = (
+                "?" in text
+                or any(cue in lower for cue in _challenge_cues)
+                or surface_act == "belief_revised"
+            )
+            if is_challenge:
+                open_questions.append({
+                    "judgment": f"Prior decision challenged: {text}",
+                    "because": "This questions or challenges an earlier agreement.",
                     "where": where,
+                    "what_to_do": "Resolve whether the original decision still holds.",
                     "drillback": drillback,
                 })
             elif _looks_actionable(text):
@@ -216,12 +226,28 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                     "drillback": drillback,
                 })
             else:
-                stable_points.append({
-                    "judgment": f"Decided: {text}",
-                    "because": "Expressed as a decision or agreement.",
-                    "where": where,
-                    "drillback": drillback,
-                })
+                # Explicit agreement/decision cues
+                _agreement_cues = (
+                    "we decided", "we agreed", "decided to", "the plan is",
+                    "confirmed", "locked in", "set for",
+                    "agreed", "makes sense", "sounds good", "perfect",
+                    "let's go with", "let's do", "will do",
+                )
+                is_agreement = any(cue in lower for cue in _agreement_cues)
+                if is_agreement:
+                    stable_points.append({
+                        "judgment": f"Agreed: {text}",
+                        "because": "Expressed as agreement or decision.",
+                        "where": where,
+                        "drillback": drillback,
+                    })
+                else:
+                    stable_points.append({
+                        "judgment": f"Stated: {text}",
+                        "because": "Expressed as a factual claim.",
+                        "where": where,
+                        "drillback": drillback,
+                    })
         elif mother_type == "RELATION":
             stable_points.append({
                 "judgment": f"Noted: {text}",

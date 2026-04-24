@@ -352,10 +352,19 @@ def tagger_to_typed_units(
     units = []
     for tag in tags:
         conf = tag.get("confidence", 0)
-        if conf < 0.4:
+        event_type = tag.get("event_type", "")
+
+        # Type-aware confidence floor:
+        # Questions, challenges, and revisions are near-sacred signals —
+        # they need stronger evidence to suppress than to keep.
+        # Other signals use the standard 0.4 threshold.
+        _CHALLENGE_EVENTS = frozenset({
+            "question_posed", "belief_revised", "contradiction_detected",
+        })
+        min_conf = 0.2 if event_type in _CHALLENGE_EVENTS else 0.4
+        if conf < min_conf:
             continue
 
-        event_type = tag.get("event_type", "")
         mother_type = event_to_mother_type(event_type)
         if not mother_type:
             continue
