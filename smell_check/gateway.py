@@ -27,7 +27,7 @@ from mcp.server.fastmcp import FastMCP
 # Ensure src is importable
 
 from .chamber import process_through_chamber, verify_custody, measure_chamber
-from .projections import project_smell_check, project_consumer, project_pro
+from .projections import project_smell_check, project_consumer
 
 PORT = int(os.environ.get("GATEWAY_PORT", "8800"))
 
