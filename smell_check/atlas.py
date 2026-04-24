@@ -125,11 +125,11 @@ class Motif:
 DECISION_MOTIFS: list[Motif] = [
     Motif(
         name="explicit_agreement",
-        description="All parties agree, no active challenge.",
+        description="All parties agree, no active challenge, no hedging.",
         trigger_kinds=["agreement"],
         trigger_events=["belief_formed", "tension_resolved"],
         blocker_kinds=["challenge"],
-        blocker_events=["belief_revised"],
+        blocker_events=["belief_revised", "commitment_hedged"],
         required_laws=["hedge_downgrades_stability"],
         output_type="StablePoint",
         examples=["Agreed. Let's go with that.", "Sounds good. I'll have the PR up."],
@@ -483,7 +483,7 @@ def claims_to_primitives(claims: list[dict[str, Any]]) -> list[Primitive]:
             kind = "question"
             stance = "negative"
         # 4. Hedged agreement (agreement with reservations)
-        elif any(hw in lower for hw in _HEDGE_WORDS):
+        elif event == "commitment_hedged" or any(hw in lower for hw in _HEDGE_WORDS):
             kind = "agreement"
             stance = "hedged"
         # 5. Clean agreement
@@ -550,3 +550,79 @@ def _anchor(p: Primitive) -> dict[str, Any]:
     if p.span:
         a["char_offset"] = list(p.span)
     return a
+
+
+# ---------------------------------------------------------------------------
+# Pipeline shape — frozen canonical layer order
+# ---------------------------------------------------------------------------
+#
+# This is the chamber's judgment pipeline. Each layer feeds the next.
+# Skipping a layer is a law violation, not an optimization.
+#
+# ┌──────────────────────────────────────────────────────────────┐
+# │  1. tagger          perceive clauses and epistemic events    │
+# │  2. mother_types    map events to governance types           │
+# │  3. sieve           promote, contest, defer, or lose claims  │
+# │  4. primitives      extract typed facts with relational      │
+# │                     structure from promoted claims            │
+# │  5. motif matching  match primitives against motif triggers  │
+# │                     and check blockers                        │
+# │  6. law application apply required laws from matched motif   │
+# │  7. coagulation     merge motif hits into one-per-concern    │
+# │                     judgments, consume matched primitives     │
+# │  8. judgments        structured output: kind, subject, state, │
+# │                     why, anchors, blockers, next_step        │
+# │  9. render           lane-aware surface grammar               │
+# └──────────────────────────────────────────────────────────────┘
+
+PIPELINE_LAYERS = (
+    "tagger",
+    "mother_types",
+    "sieve",
+    "primitives",
+    "motif_matching",
+    "law_application",
+    "coagulation",
+    "judgments",
+    "render",
+)
+
+
+def verify_pipeline_shape() -> tuple[bool, list[str]]:
+    """Verify the pipeline infrastructure is intact. Pure.
+
+    Checks that all required components exist and are wired correctly.
+    This is a structural test, not a behavioral test.
+    """
+    errors = []
+
+    # Laws must exist and have unique names
+    law_names = [law.name for law in DECISION_LAWS]
+    if len(law_names) != len(set(law_names)):
+        errors.append("duplicate law names")
+    if not law_names:
+        errors.append("no laws defined")
+
+    # Motifs must reference valid laws
+    for motif in DECISION_MOTIFS:
+        for law_name in motif.required_laws:
+            if law_name not in LAW_INDEX:
+                errors.append(f"motif '{motif.name}' references unknown law '{law_name}'")
+
+    # Motifs must have unique names
+    motif_names = [m.name for m in DECISION_MOTIFS]
+    if len(motif_names) != len(set(motif_names)):
+        errors.append("duplicate motif names")
+
+    # Contrast pairs must reference valid motifs
+    for pair in CONTRAST_PAIRS:
+        if pair.motif_a not in MOTIF_INDEX:
+            errors.append(f"contrast pair '{pair.name}' references unknown motif '{pair.motif_a}'")
+        if pair.motif_b not in MOTIF_INDEX:
+            errors.append(f"contrast pair '{pair.name}' references unknown motif '{pair.motif_b}'")
+
+    # Pipeline layers must be the canonical 9
+    if len(PIPELINE_LAYERS) != 9:
+        errors.append(f"expected 9 pipeline layers, got {len(PIPELINE_LAYERS)}")
+
+    return len(errors) == 0, errors

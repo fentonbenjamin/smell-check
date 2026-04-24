@@ -60,6 +60,7 @@ ALL_TYPES = frozenset({
 
 COMMITMENT_FORMED = "commitment_formed"
 COMMITMENT_REVISED = "commitment_revised"
+COMMITMENT_HEDGED = "commitment_hedged"
 CONFLICT_DETECTED = "conflict_detected"
 CONFLICT_RESOLVED = "conflict_resolved"
 UNCERTAINTY_EXPRESSED = "uncertainty_expressed"
@@ -71,6 +72,7 @@ PENDING_STATUS = "pending_status"
 _V2_TO_V1 = {
     COMMITMENT_FORMED: BELIEF_FORMED,
     COMMITMENT_REVISED: BELIEF_REVISED,
+    COMMITMENT_HEDGED: "commitment_hedged",  # new v1 event — no legacy equivalent
     CONFLICT_DETECTED: TENSION_DETECTED,
     CONFLICT_RESOLVED: TENSION_RESOLVED,
     UNCERTAINTY_EXPRESSED: QUESTION_POSED,
@@ -320,6 +322,20 @@ _REVISION_CUES = [
     ("not what i meant", 5), ("i misspoke", 5),
 ]
 
+_HEDGE_CUES = [
+    # Softened agreement — sounds like yes but isn't fully committed
+    ("yeah, probably", 5), ("i guess", 5), ("i suppose", 5),
+    ("sure, when you get a chance", 5),
+    ("probably", 4), ("seems fine", 4), ("seems okay", 4),
+    ("should be okay", 4), ("should be fine", 4),
+    ("likely", 3), ("not opposed", 4), ("fine, but", 4),
+    ("i think so", 3), ("might work", 4), ("could work", 3),
+    # Weak commitment language
+    ("we can deal with that", 4), ("when it comes up", 4),
+    ("if it becomes a problem", 4), ("for now", 3),
+    ("let's see", 3), ("we'll figure it out", 4),
+]
+
 # Map cue families to surface acts
 _CUE_FAMILY_TO_ACT = {
     "decision": COMMITMENT_FORMED,
@@ -330,6 +346,7 @@ _CUE_FAMILY_TO_ACT = {
     "action": ACTION_REQUIRED,
     "pending": PENDING_STATUS,
     "revision": COMMITMENT_REVISED,
+    "hedge": COMMITMENT_HEDGED,
 }
 
 _ALL_CUE_FAMILIES = {
@@ -340,6 +357,7 @@ _ALL_CUE_FAMILIES = {
     "resolution": _RESOLUTION_CUES,
     "action": _ACTION_CUES,
     "pending": _PENDING_CUES,
+    "hedge": _HEDGE_CUES,
     "revision": _REVISION_CUES,
 }
 

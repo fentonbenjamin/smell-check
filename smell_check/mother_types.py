@@ -43,6 +43,7 @@ ALL_MOTHER_TYPES = frozenset({CONTRACT, CONSTRAINT, UNCERTAINTY, RELATION, WITNE
 
 _EVENT_TO_MOTHER_TYPE = {
     "belief_formed": CONTRACT,
+    "commitment_hedged": CONTRACT,  # hedged agreement — CONTRACT with stance=hedged
     "tension_detected": CONSTRAINT,
     "question_posed": UNCERTAINTY,
     "evidence_cited": WITNESS,
@@ -361,7 +362,7 @@ def tagger_to_typed_units(
         # explicit agreement language even at low tagger confidence.
         _SACRED_EVENTS = frozenset({
             "question_posed", "belief_revised", "contradiction_detected",
-            "tension_resolved", "belief_formed",
+            "tension_resolved", "belief_formed", "commitment_hedged",
         })
         min_conf = 0.2 if event_type in _SACRED_EVENTS else 0.4
         if conf < min_conf:
