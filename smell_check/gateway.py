@@ -353,11 +353,32 @@ def _build_combined_app(port: int):
         body = await request.json()
         if "custody_record" in body and "boundary_attestation" not in body:
             body = body["custody_record"]
+        # Fail closed: missing required fields = invalid, not a server error
+        required = ["boundary_attestation", "authoritative_output"]
+        for field in required:
+            if field not in body:
+                return JSONResponse({
+                    "valid": False,
+                    "wall_state": "broken",
+                    "errors": [f"missing required field: {field}"],
+                    "checks_performed": 0,
+                    "perception_mode": "unknown",
+                    "execution_class": "unknown",
+                    "security_mode": "unknown",
+                })
         try:
             result = verify_custody(body)
             return JSONResponse(result)
         except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+            return JSONResponse({
+                "valid": False,
+                "wall_state": "broken",
+                "errors": [str(e)],
+                "checks_performed": 0,
+                "perception_mode": "unknown",
+                "execution_class": "unknown",
+                "security_mode": "unknown",
+            })
 
     async def home(request: Request):
         return HTMLResponse(_CONSUMER_PAGE)
