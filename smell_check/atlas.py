@@ -138,8 +138,8 @@ DECISION_MOTIFS: list[Motif] = [
     Motif(
         name="challenge",
         description="Someone questions or pushes back on a prior position.",
-        trigger_kinds=["challenge", "question"],
-        trigger_events=["belief_revised", "question_posed"],
+        trigger_kinds=["challenge"],
+        trigger_events=["belief_revised"],
         blocker_kinds=[],
         blocker_events=[],
         required_laws=["challenge_beats_agreement", "unresolved_challenge_emits_open_question"],
@@ -276,147 +276,172 @@ _CHALLENGE_CUES = frozenset({
 
 def coagulate_decisions(
     primitives: list[Primitive],
+    motifs: list[Motif] | None = None,
+    laws: list[Law] | None = None,
 ) -> list[Judgment]:
-    """Decision coagulator: merge primitives into decision-state judgments.
+    """Decision coagulator: match motifs, apply laws, emit judgments.
 
-    Groups by subject_ref (or text similarity when subject_ref is empty).
-    Applies laws in precedence order to determine final state.
-    Emits one judgment per decision subject.
+    Pipeline:
+      1. Group primitives by kind (using the kind from claims_to_primitives)
+      2. Match motifs in precedence order against primitive kinds
+      3. Check blocker conditions
+      4. Apply required laws from the matched motif
+      5. Consume matched primitives (no double-matching)
+      6. Emit one structured judgment per matched motif
 
     Pure function.
     """
     if not primitives:
         return []
 
-    # Classify each primitive's decision role
-    agreements: list[Primitive] = []
-    challenges: list[Primitive] = []
-    questions: list[Primitive] = []
-    resolutions: list[Primitive] = []
-    hedged: list[Primitive] = []
+    motifs = motifs or DECISION_MOTIFS
+    laws = laws or DECISION_LAWS
+    law_by_name = {law.name: law for law in laws}
 
+    # --- Step 1: group primitives by kind ---
+    by_kind: dict[str, list[Primitive]] = {}
     for p in primitives:
-        lower = p.text.lower()
+        by_kind.setdefault(p.kind, []).append(p)
 
-        # Resolution signals
-        if p.epistemic_event == "tension_resolved" or any(
-            cue in lower for cue in ("confirmed", "let's go with", "perfect")
-        ):
-            resolutions.append(p)
-            continue
+    # Track which primitives have been consumed by a motif
+    consumed: set[str] = set()  # clause_ids
 
-        # Challenge signals
-        if p.kind == "challenge" or p.epistemic_event == "belief_revised" or (
-            "?" in p.text and any(cue in lower for cue in _CHALLENGE_CUES)
-        ):
-            challenges.append(p)
-            continue
+    def _is_consumed(p: Primitive) -> bool:
+        return p.clause_id in consumed if p.clause_id else id(p) in consumed
 
-        # Question signals (explicit questions, not challenges)
-        if p.kind == "question" or p.epistemic_event == "question_posed":
-            questions.append(p)
-            continue
+    def _consume(ps: list[Primitive]) -> None:
+        for p in ps:
+            consumed.add(p.clause_id if p.clause_id else id(p))
 
-        # Hedged agreement
-        if any(hw in lower for hw in _HEDGE_WORDS):
-            hedged.append(p)
-            continue
+    # All primitive kinds present (for blocker checks)
+    all_kinds = set(by_kind.keys())
+    all_events = {p.epistemic_event for p in primitives if p.epistemic_event}
 
-        # Clean agreement
-        if any(cue in lower for cue in _AGREEMENT_CUES) or (
-            p.epistemic_event == "belief_formed" and p.stance == "positive"
-        ):
-            agreements.append(p)
-            continue
+    # --- Step 2-5: match motifs in precedence order ---
+    def _motif_precedence(m: Motif) -> int:
+        if not m.required_laws:
+            return 0
+        return max(
+            (law_by_name[ln].precedence for ln in m.required_laws if ln in law_by_name),
+            default=0,
+        )
 
-        # Default: treat as a claim (mild agreement)
-        if p.mother_type == "CONTRACT":
-            agreements.append(p)
-        elif p.mother_type == "CONSTRAINT":
-            # Constraints go to concerns, handled elsewhere
-            pass
+    sorted_motifs = sorted(motifs, key=_motif_precedence, reverse=True)
 
-    # Apply laws in precedence order to determine overall decision state
     judgments: list[Judgment] = []
 
-    # Law: challenge_beats_agreement (precedence 100)
-    if challenges and not resolutions:
-        # Unresolved challenge → open question
-        best_challenge = max(challenges, key=lambda p: p.confidence)
+    for motif in sorted_motifs:
+        # Find unconsumed primitives matching trigger conditions
+        triggered_by: list[Primitive] = []
+        for p in primitives:
+            if _is_consumed(p):
+                continue
+            if p.kind in motif.trigger_kinds or p.epistemic_event in motif.trigger_events:
+                triggered_by.append(p)
+
+        if not triggered_by:
+            continue
+
+        # Check blockers against ALL primitives (not just unconsumed)
+        blocked = bool(
+            (set(motif.blocker_kinds) & all_kinds)
+            or (set(motif.blocker_events) & all_events)
+        )
+        if blocked:
+            continue
+
+        # Motif matched — collect required laws
+        applied_laws = [ln for ln in motif.required_laws if ln in law_by_name]
+
+        # Pick the best representative
+        best = max(triggered_by, key=lambda p: (p.confidence, len(p.text)))
+
+        # Build judgment
+        judgments.append(Judgment(
+            kind=motif.output_type,
+            subject=_normalize(best.text),
+            state=_state_from_kind(motif.output_type),
+            why=motif.description,
+            anchors=[_anchor(p) for p in triggered_by],
+            blockers=_blockers_for_motif(motif, by_kind),
+            next_step=_next_step_for(motif.output_type),
+            laws_applied=applied_laws,
+            motif=motif.name,
+            evidence=[p.text for p in triggered_by],
+            confidence_basis=f"trigger: {len(triggered_by)} primitives, laws: {len(applied_laws)}",
+        ))
+
+        # Consume the matched primitives
+        _consume(triggered_by)
+
+    # --- Unconsumed questions → standalone open questions ---
+    for p in by_kind.get("question", []):
+        if _is_consumed(p):
+            continue
         judgments.append(Judgment(
             kind="OpenQuestion",
-            subject=_normalize(best_challenge.text),
-            state="open",
-            why="A challenge or question was raised and not explicitly resolved.",
-            anchors=[_anchor(p) for p in challenges],
-            blockers=["No explicit resolution found."],
-            next_step="Resolve the challenge before treating this as decided.",
-            laws_applied=["challenge_beats_agreement", "unresolved_challenge_emits_open_question"],
-            motif="challenge" if len(challenges) == 1 else "decision_reversal",
-            evidence=[p.text for p in challenges],
-        ))
-
-    # Law: resolution_settles_challenge (precedence 80)
-    if challenges and resolutions:
-        best_resolution = max(resolutions, key=lambda p: p.confidence)
-        judgments.append(Judgment(
-            kind="ResolvedDecision",
-            subject=_normalize(best_resolution.text),
-            state="resolved",
-            why="A challenge was raised and then explicitly resolved.",
-            anchors=[_anchor(p) for p in resolutions + challenges],
-            next_step="",
-            laws_applied=["resolution_settles_challenge"],
-            motif="challenge_then_resolved",
-            evidence=[p.text for p in challenges + resolutions],
-        ))
-
-    # Law: hedge_downgrades_stability (precedence 90)
-    if hedged and not challenges:
-        best_hedge = max(hedged, key=lambda p: len(p.text))
-        judgments.append(Judgment(
-            kind="ProvisionalDecision",
-            subject=_normalize(best_hedge.text),
-            state="provisional",
-            why="Agreement language is present but hedged — not fully committed.",
-            anchors=[_anchor(p) for p in hedged],
-            blockers=["Hedging language suggests incomplete commitment."],
-            next_step="Confirm explicitly or acknowledge the uncertainty.",
-            laws_applied=["hedge_downgrades_stability"],
-            motif="hedged_agreement",
-            evidence=[p.text for p in hedged],
-        ))
-
-    # Clean agreement (only if no challenges or hedges)
-    if agreements and not challenges and not hedged:
-        best_agreement = max(agreements, key=lambda p: len(p.text))
-        judgments.append(Judgment(
-            kind="StablePoint",
-            subject=_normalize(best_agreement.text),
-            state="stable",
-            why="Explicit agreement with no active challenge.",
-            anchors=[_anchor(p) for p in agreements],
-            next_step="",
-            laws_applied=[],
-            motif="explicit_agreement",
-            evidence=[p.text for p in agreements],
-        ))
-
-    # Standalone questions (not challenges to prior decisions)
-    for q in questions:
-        judgments.append(Judgment(
-            kind="OpenQuestion",
-            subject=_normalize(q.text),
+            subject=_normalize(p.text),
             state="open",
             why="Explicitly raised as a question.",
-            anchors=[_anchor(q)],
+            anchors=[_anchor(p)],
             next_step="Answer or resolve.",
             laws_applied=[],
             motif="",
-            evidence=[q.text],
+            evidence=[p.text],
         ))
+        _consume([p])
+
+    # --- Unconsumed claims → weak stable points (only if no motifs matched) ---
+    unconsumed_claims = [p for p in by_kind.get("claim", []) if not _is_consumed(p)]
+    if unconsumed_claims and not judgments:
+        best = max(unconsumed_claims, key=lambda p: len(p.text))
+        if len(best.text) > 40:
+            judgments.append(Judgment(
+                kind="StablePoint",
+                subject=_normalize(best.text),
+                state="stable",
+                why="Stated as a factual claim with no active challenge.",
+                anchors=[_anchor(p) for p in unconsumed_claims],
+                laws_applied=[],
+                motif="",
+                evidence=[p.text for p in unconsumed_claims],
+            ))
 
     return judgments
+
+
+def _state_from_kind(kind: str) -> str:
+    """Map judgment kind to state."""
+    return {
+        "StablePoint": "stable",
+        "OpenQuestion": "open",
+        "ProvisionalDecision": "provisional",
+        "ResolvedDecision": "resolved",
+        "Concern": "active",
+        "ContradictionCluster": "contested",
+    }.get(kind, "unknown")
+
+
+def _next_step_for(kind: str) -> str:
+    """Default next step for a judgment kind."""
+    return {
+        "StablePoint": "",
+        "OpenQuestion": "Resolve before relying on it.",
+        "ProvisionalDecision": "Confirm explicitly or acknowledge the uncertainty.",
+        "ResolvedDecision": "",
+        "Concern": "Address the concern.",
+    }.get(kind, "")
+
+
+def _blockers_for_motif(motif: Motif, by_kind: dict[str, list[Primitive]]) -> list[str]:
+    """Generate blockers list based on what's missing."""
+    blockers = []
+    if motif.name in ("challenge", "decision_reversal"):
+        if not by_kind.get("resolution"):
+            blockers.append("No explicit resolution found.")
+    if motif.name == "hedged_agreement":
+        blockers.append("Hedging language suggests incomplete commitment.")
+    return blockers
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +449,16 @@ def coagulate_decisions(
 # ---------------------------------------------------------------------------
 
 def claims_to_primitives(claims: list[dict[str, Any]]) -> list[Primitive]:
-    """Convert promoted/contested/deferred claims into atlas primitives. Pure."""
+    """Convert promoted/contested/deferred claims into atlas primitives. Pure.
+
+    Classification priority (first match wins):
+    1. Resolution — tension_resolved or explicit confirmation cues
+    2. Challenge — belief_revised, challenge cues, or questions about prior decisions
+    3. Question — question_posed or UNCERTAINTY
+    4. Agreement — agreement cues or positive stance
+    5. Dependency — CONSTRAINT
+    6. Claim — everything else
+    """
     primitives = []
     for c in claims:
         text = c.get("text", "")
@@ -432,30 +466,38 @@ def claims_to_primitives(claims: list[dict[str, Any]]) -> list[Primitive]:
         mother_type = c.get("mother_type", "")
         event = c.get("epistemic_event", "")
 
-        # Determine kind
-        if mother_type == "UNCERTAINTY" or event == "question_posed":
-            kind = "question"
+        # 1. Resolution (highest priority — settles challenges)
+        if event == "tension_resolved" or any(
+            cue in lower for cue in ("confirmed", "let's go with", "perfect")
+        ):
+            kind = "resolution"
+            stance = "positive"
+        # 2. Challenge
         elif event == "belief_revised" or any(
-            cue in lower for cue in ("wait,", "hold on", "i thought we", "didn't we")
+            cue in lower for cue in _CHALLENGE_CUES
         ):
             kind = "challenge"
+            stance = "negative"
+        # 3. Question
+        elif mother_type == "UNCERTAINTY" or event == "question_posed":
+            kind = "question"
+            stance = "negative"
+        # 4. Hedged agreement (agreement with reservations)
+        elif any(hw in lower for hw in _HEDGE_WORDS):
+            kind = "agreement"
+            stance = "hedged"
+        # 5. Clean agreement
         elif any(cue in lower for cue in _AGREEMENT_CUES):
             kind = "agreement"
+            stance = "positive"
+        # 6. Dependency (CONSTRAINT)
         elif mother_type == "CONSTRAINT":
             kind = "dependency"
-        elif mother_type == "WITNESS":
-            kind = "claim"
+            stance = "neutral"
+        # 7. Default claim
         else:
             kind = "claim"
-
-        # Determine stance
-        stance = "neutral"
-        if any(hw in lower for hw in _HEDGE_WORDS):
-            stance = "hedged"
-        elif any(cue in lower for cue in _AGREEMENT_CUES):
-            stance = "positive"
-        elif "?" in text or kind == "challenge":
-            stance = "negative"
+            stance = "neutral"
 
         primitives.append(Primitive(
             kind=kind,
