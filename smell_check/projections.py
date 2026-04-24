@@ -223,104 +223,86 @@ def _compress_group(items: list[dict[str, Any]], threshold: float = 0.4) -> list
 def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
     """Project governed state into smell check output.
 
-    Pipeline: type → normalize → compress → render
+    Pipeline: primitives → coagulator (laws) → judgments → render
     One concern → one judgment card → supporting evidence behind it.
     """
+    from .atlas import claims_to_primitives, coagulate_decisions, Judgment
+
     promoted = governed_state.get("promoted", [])
     contested = governed_state.get("contested", [])
     deferred = governed_state.get("deferred", [])
     input_kind = governed_state.get("input_kind", "thread")
 
-    # --- Type each claim ---
-    typed: dict[str, list[dict[str, Any]]] = {
-        STABLE: [], RISK: [], ACTION: [], OPEN_Q: [], META: [],
-    }
+    # Separate code findings (keep existing structural rendering)
+    code_claims = [c for c in promoted if c.get("_finding_kind")]
+    prose_claims = [c for c in promoted if not c.get("_finding_kind")]
 
-    for claim in promoted:
+    # --- Code findings: existing structural rendering ---
+    code_findings = []
+    code_stable = []
+    for claim in code_claims:
+        finding_kind = claim["_finding_kind"]
         jtype = _type_claim(claim)
         text = claim.get("text", "")
-        finding_kind = claim.get("_finding_kind", "")
-
-        # Build the source anchor
         code_where = claim.get("_where")
-        source_span = claim.get("source_span")
-        clause_id = claim.get("clause_id", "")
-        if code_where:
-            where = dict(code_where)
-            where["text"] = text
-        else:
-            where = {"text": text, "clause_id": clause_id}
-            if source_span:
-                where["char_offset"] = source_span
-
+        where = dict(code_where) if code_where else {"text": text}
+        where["text"] = text
         drillback = {
             "mother_type": claim.get("mother_type", ""),
             "subtype": claim.get("subtype", ""),
             "confidence": claim.get("confidence"),
             "epistemic_event": claim.get("epistemic_event", ""),
         }
+        card = _render_code_finding(claim, finding_kind, where, drillback)
+        if card:
+            if jtype == STABLE:
+                code_stable.append(card)
+            else:
+                code_findings.append(card)
 
-        # Code findings use existing specialized rendering
-        if finding_kind:
-            card = _render_code_finding(claim, finding_kind, where, drillback)
-            if card:
-                typed[jtype].append(card)
-                continue
+    # --- Prose claims: atlas pipeline ---
+    # Convert to primitives
+    all_prose = prose_claims + list(contested) + list(deferred)
+    primitives = claims_to_primitives(all_prose)
 
-        # Thread/document claims: normalize the judgment text
-        judgment = _normalize_judgment(jtype, text)
+    # Run decision coagulator
+    judgments = coagulate_decisions(primitives)
 
-        card = {
-            "judgment": judgment,
-            "where": where,
-            "drillback": drillback,
-        }
+    # Also handle CONSTRAINT claims as findings (not decision-state)
+    constraint_findings = []
+    for claim in prose_claims:
+        if claim.get("mother_type") == "CONSTRAINT":
+            text = claim.get("text", "")
+            constraint_findings.append({
+                "judgment": _normalize_text(text),
+                "because": "Expressed as a constraint or requirement.",
+                "where": {"text": text, "clause_id": claim.get("clause_id", "")},
+                "what_to_do": "Assign it or confirm it's handled." if _looks_actionable(text) else "Verify it's being respected.",
+                "drillback": {"mother_type": "CONSTRAINT"},
+            })
 
-        # Type-specific framing
-        if jtype == RISK:
-            card["because"] = _risk_reason(claim)
-            card["what_to_do"] = _risk_action(claim)
-        elif jtype == ACTION:
-            card["because"] = "This is an obligation or required action."
-            card["what_to_do"] = "Assign it or confirm it's handled."
-        elif jtype == OPEN_Q:
-            card["because"] = _question_reason(claim)
-            card["what_to_do"] = "Resolve before relying on it."
-        elif jtype == STABLE:
-            card["because"] = _stable_reason(claim)
+    # --- Render judgments into output cards ---
+    findings = list(code_findings) + list(constraint_findings)
+    stable_points = list(code_stable)
+    open_questions: list[dict[str, Any]] = []
 
-        typed[jtype].append(card)
+    for j in judgments:
+        card = _render_judgment(j)
+        if j.kind == "StablePoint" or j.kind == "ResolvedDecision":
+            stable_points.append(card)
+        elif j.kind == "OpenQuestion":
+            open_questions.append(card)
+        elif j.kind == "ProvisionalDecision":
+            # Provisional = neither stable nor open, but worth noting
+            card["what_to_do"] = j.next_step or "Confirm explicitly."
+            findings.append(card)
+        elif j.kind == "Concern":
+            findings.append(card)
 
-    # Contested → risks
-    for claim in contested:
-        text = claim.get("text", "")
-        typed[RISK].append({
-            "judgment": _normalize_text(text),
-            "because": "Conflicting signals — contested by other evidence.",
-            "where": {"text": text, "clause_id": claim.get("clause_id", "")},
-            "what_to_do": "Resolve the conflict before relying on it.",
-            "drillback": {"status": "contested"},
-        })
-
-    # Deferred → weak open questions (only if substantive)
-    for claim in deferred:
-        text = claim.get("text", claim.get("claim_text", ""))
-        if len(text.strip()) < 20:
-            continue  # too thin to surface
-        reason = claim.get("_defer_reason", "insufficient evidence")
-        typed[OPEN_Q].append({
-            "judgment": _normalize_text(text),
-            "because": f"Deferred — {reason}.",
-            "where": {"text": text, "clause_id": claim.get("clause_id", "")},
-            "what_to_do": "Gather more evidence or clarify.",
-            "drillback": {"status": "deferred", "reason": reason},
-        })
-
-    # --- Compress each group ---
-    findings = _compress_group(typed[RISK] + typed[ACTION])
-    stable_points = _compress_group(typed[STABLE])
-    open_questions = _compress_group(typed[OPEN_Q])
-    # META is suppressed — not rendered
+    # Compress across categories
+    findings = _compress_group(findings)
+    stable_points = _compress_group(stable_points)
+    open_questions = _compress_group(open_questions)
 
     # --- Build summary ---
     total_issues = len(findings) + len(open_questions)
@@ -344,6 +326,28 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
         "stable_points": stable_points,
         "open_questions": open_questions,
     }
+
+
+def _render_judgment(j: "Judgment") -> dict[str, Any]:
+    """Render a structured Judgment into an output card."""
+    card: dict[str, Any] = {
+        "judgment": j.subject,
+        "because": j.why,
+        "where": j.anchors[0] if j.anchors else {"text": j.subject},
+        "drillback": {
+            "kind": j.kind,
+            "state": j.state,
+            "motif": j.motif,
+            "laws_applied": j.laws_applied,
+        },
+    }
+    if j.next_step:
+        card["what_to_do"] = j.next_step
+    if j.blockers:
+        card["blockers"] = j.blockers
+    if len(j.evidence) > 1:
+        card["supporting_evidence"] = j.evidence[1:]  # first is in the judgment itself
+    return card
 
 
 # ---------------------------------------------------------------------------

@@ -289,6 +289,19 @@ def promote(
             relevant.append(c)
             continue
 
+        # Signal 0a: CONTRACT with challenge cues is governance-relevant
+        # "I thought we already decided" is a challenge regardless of topic
+        event = c.get("epistemic_event", "")
+        lower_text = text.lower()
+        _challenge_bypass = ("i thought we", "didn't we", "wasn't that", "but we", "wait,", "hold on")
+        if mother_type == "CONTRACT" and (
+            event == "belief_revised"
+            or "?" in text
+            or any(cue in lower_text for cue in _challenge_bypass)
+        ):
+            relevant.append(c)
+            continue
+
         # Signal 0b: typed unit with a non-unknown subtype = intentionally classified
         subtype = c.get("subtype", "")
         if mother_type in _MOTHER_TYPES and subtype and subtype != "unknown_subtype":
