@@ -1,299 +1,342 @@
 """Projection lenses — governed state → human-readable smell check output.
 
+Pipeline: perceive → promote → type → compress → render
+
 The governed state is the canonical object. Projections are lenses over it.
 Same engine, different leaves.
 
-The output is NOT backend-shaped buckets.
-The output reads like a sharp review — findings first, proof underneath.
-
-Three layers:
-  1. Human-readable interpretation — summary, findings, what to do
-  2. Structural reasoning — typed basis for each finding (drillback)
-  3. Source drillback — clause/span anchors to the original input
+The output reads like a sharp review:
+  - one judgment per concern, not one card per claim
+  - evidence behind the card, not as the card
+  - short normalized judgments, not transcript fragments
 """
 
 from __future__ import annotations
 
+import re
+import string
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Step 1: Type claims into judgment categories
+# ---------------------------------------------------------------------------
+
+# Judgment types — stricter than mother types
+STABLE = "stable"           # genuinely settled proposition
+RISK = "risk"               # concern that limits confidence
+ACTION = "action"           # someone needs to do something
+OPEN_Q = "open_question"    # explicit or tightly inferred unresolved
+META = "meta"               # process commentary — suppress in output
+
+
+def _type_claim(claim: dict[str, Any]) -> str:
+    """Assign a judgment type to a promoted claim. Pure."""
+    mother_type = claim.get("mother_type", "")
+    text = claim.get("text", "")
+    lower = text.lower()
+    finding_kind = claim.get("_finding_kind", "")
+    event = claim.get("epistemic_event", "")
+
+    # Code findings keep their existing classification
+    if finding_kind:
+        if finding_kind in ("purity", "guard_present"):
+            return STABLE
+        return RISK
+
+    # Challenge/question → open question
+    _challenge_cues = (
+        "i thought we", "didn't we", "wasn't that",
+        "but we", "wait,", "hold on",
+    )
+    if mother_type == "UNCERTAINTY":
+        return OPEN_Q
+    if mother_type == "CONTRACT" and (
+        "?" in text
+        or any(cue in lower for cue in _challenge_cues)
+        or event == "belief_revised"
+    ):
+        return OPEN_Q
+
+    # Actionable constraints → action or risk
+    if mother_type == "CONSTRAINT":
+        if _looks_actionable(text):
+            return ACTION
+        return RISK
+
+    # Contested → risk
+    if claim.get("_contested"):
+        return RISK
+
+    # Agreement / decision → stable
+    _agreement_cues = (
+        "we decided", "we agreed", "decided to", "the plan is",
+        "confirmed", "locked in", "set for",
+        "agreed", "makes sense", "sounds good", "perfect",
+        "let's go with", "let's do", "will do",
+    )
+    if mother_type == "CONTRACT" and any(cue in lower for cue in _agreement_cues):
+        return STABLE
+
+    # WITNESS → stable (reported fact)
+    if mother_type == "WITNESS":
+        return STABLE
+
+    # RELATION → meta (suppress "Noted:" cards)
+    if mother_type == "RELATION":
+        # Only promote to stable if it has real substance (>60 chars, specific)
+        if len(text) > 60 and event == "tension_resolved":
+            return STABLE
+        return META
+
+    # CONTRACT without agreement cues → stable only if substantial
+    if mother_type == "CONTRACT":
+        if _looks_actionable(text):
+            return ACTION
+        if len(text) > 40:
+            return STABLE
+        return META
+
+    return META
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Normalize judgment text
+# ---------------------------------------------------------------------------
+
+# Speaker attribution pattern: "Alice:", "Bob:", "PM:", "Dev A:", "Eng Lead:"
+_SPEAKER_RE = re.compile(r"^[A-Z][A-Za-z\s]*:\s*")
+
+# Hedge prefixes to strip
+_HEDGE_PREFIXES = (
+    "i think ", "i believe ", "i feel like ", "maybe ",
+    "probably ", "i guess ", "well, ",
+)
+
+
+def _normalize_text(text: str) -> str:
+    """Strip speaker attribution, hedge prefixes, and clean up for display. Pure."""
+    t = text.strip()
+    # Strip speaker attribution
+    t = _SPEAKER_RE.sub("", t)
+    # Strip hedge prefixes
+    lower = t.lower()
+    for prefix in _HEDGE_PREFIXES:
+        if lower.startswith(prefix):
+            t = t[len(prefix):]
+            t = t[0].upper() + t[1:] if t else t
+            break
+    # Trim trailing period if it's the only one (not an abbreviation)
+    if t.endswith(".") and t.count(".") == 1:
+        t = t[:-1]
+    return t.strip()
+
+
+def _normalize_judgment(jtype: str, text: str) -> str:
+    """Create a clean judgment sentence from claim text. Pure."""
+    clean = _normalize_text(text)
+    if not clean:
+        return text
+
+    # Truncate long transcript fragments
+    if len(clean) > 120:
+        # Find a natural break point
+        for sep in (". ", "; ", ", ", " — "):
+            idx = clean.find(sep, 40)
+            if 40 < idx < 100:
+                clean = clean[:idx]
+                break
+        else:
+            clean = clean[:100] + "..."
+
+    return clean
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Compress — cluster related judgments, dedupe, pick strongest
+# ---------------------------------------------------------------------------
+
+def _extract_words(text: str) -> set[str]:
+    """Extract meaningful words for clustering."""
+    _stop = frozenset({
+        "a", "an", "the", "is", "are", "was", "were", "be", "been",
+        "to", "for", "of", "in", "on", "and", "or", "but", "not",
+        "with", "at", "by", "from", "as", "it", "its", "this", "that",
+        "we", "i", "you", "they", "he", "she", "do", "does", "did",
+        "will", "would", "could", "should", "can", "has", "have", "had",
+        "so", "if", "then", "just", "also", "very", "too", "really",
+    })
+    stripped = text.lower().translate(str.maketrans("", "", string.punctuation))
+    return set(stripped.split()) - _stop
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _compress_group(items: list[dict[str, Any]], threshold: float = 0.4) -> list[dict[str, Any]]:
+    """Cluster related items and pick one representative per cluster. Pure."""
+    if not items:
+        return []
+
+    clusters: list[list[dict[str, Any]]] = []
+    cluster_words: list[set[str]] = []
+
+    for item in items:
+        words = _extract_words(item.get("judgment", ""))
+        placed = False
+        for i, cw in enumerate(cluster_words):
+            if _jaccard(words, cw) >= threshold:
+                clusters[i].append(item)
+                cluster_words[i] |= words
+                placed = True
+                break
+        if not placed:
+            clusters.append([item])
+            cluster_words.append(words)
+
+    # Pick representative: prefer longest judgment in each cluster
+    result = []
+    for cluster in clusters:
+        rep = max(cluster, key=lambda x: len(x.get("judgment", "")))
+        # Attach evidence from other cluster members
+        evidence = []
+        for item in cluster:
+            if item is not rep:
+                evidence.append(item.get("where", {}).get("text", ""))
+        if evidence:
+            rep = dict(rep)  # copy
+            rep["supporting_evidence"] = [e for e in evidence if e]
+        result.append(rep)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Render — compose the final output
+# ---------------------------------------------------------------------------
+
 def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
-    """Project governed state into smell check findings.
+    """Project governed state into smell check output.
 
-    The output reads like an inline review:
-      - what smells funny
-      - why it smells funny
-      - what seems stable
-      - what needs attention
-      - what to do next
-
-    Not buckets. Findings.
+    Pipeline: type → normalize → compress → render
+    One concern → one judgment card → supporting evidence behind it.
     """
     promoted = governed_state.get("promoted", [])
     contested = governed_state.get("contested", [])
     deferred = governed_state.get("deferred", [])
+    input_kind = governed_state.get("input_kind", "thread")
 
-    findings = []
-    stable_points = []
-    open_questions = []
+    # --- Type each claim ---
+    typed: dict[str, list[dict[str, Any]]] = {
+        STABLE: [], RISK: [], ACTION: [], OPEN_Q: [], META: [],
+    }
 
     for claim in promoted:
-        mother_type = claim.get("mother_type", "")
+        jtype = _type_claim(claim)
         text = claim.get("text", "")
-        subtype = claim.get("subtype", "")
-        confidence = claim.get("confidence")
+        finding_kind = claim.get("_finding_kind", "")
 
-        # Source anchor — where in the original input this came from
-        # Code findings have _where with file/line/function
-        # Thread findings have source_span with char offsets
+        # Build the source anchor
         code_where = claim.get("_where")
         source_span = claim.get("source_span")
         clause_id = claim.get("clause_id", "")
         if code_where:
-            where = dict(code_where)  # copy to avoid mutating shared dict
+            where = dict(code_where)
             where["text"] = text
         else:
-            where = {
-                "text": text,
-                "clause_id": clause_id,
-            }
+            where = {"text": text, "clause_id": clause_id}
             if source_span:
                 where["char_offset"] = source_span
 
         drillback = {
-            "mother_type": mother_type,
-            "subtype": subtype,
-            "confidence": confidence,
-            "claim_type": claim.get("claim_type", ""),
+            "mother_type": claim.get("mother_type", ""),
+            "subtype": claim.get("subtype", ""),
+            "confidence": claim.get("confidence"),
             "epistemic_event": claim.get("epistemic_event", ""),
         }
 
-        finding_kind = claim.get("_finding_kind", "")
-        evidence_basis = claim.get("_evidence_basis", "")
-        signals = claim.get("_signals", [])
+        # Code findings use existing specialized rendering
+        if finding_kind:
+            card = _render_code_finding(claim, finding_kind, where, drillback)
+            if card:
+                typed[jtype].append(card)
+                continue
 
-        # Code-specific rendering by finding kind (structural, not prose)
-        if finding_kind == "impurity":
-            signal_detail = f": {', '.join(signals)}" if signals else ""
-            findings.append({
-                "judgment": f"{_fn_name(where)} has side effects{signal_detail}",
-                "because": f"AST analysis found I/O or impure operations in this function.",
-                "where": where,
-                "what_to_do": "Review whether the impurity is intentional.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "violation":
-            findings.append({
-                "judgment": f"{_fn_name(where)}: {_violation_text(text)}",
-                "because": "Structural analysis found a constraint violation.",
-                "where": where,
-                "what_to_do": "Review the function's behavior vs its contract.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "provenance_gap":
-            findings.append({
-                "judgment": f"External dependency with no provenance: {text}",
-                "because": "This import appears external to the repo.",
-                "where": where,
-                "what_to_do": "Verify the dependency source.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "exception_safety":
-            findings.append({
-                "judgment": f"{_fn_name(where)}: {_violation_text(text)}",
-                "because": "Exception handling issue detected by AST analysis.",
-                "where": where,
-                "what_to_do": "Add proper error handling or make the exception handling explicit.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "guard_present":
-            stable_points.append({
-                "judgment": f"{_fn_name(where)} {text.split(' has ', 1)[1] if ' has ' in text else 'has validation'}",
-                "because": "Input validation guards detected by AST.",
-                "where": where,
-                "drillback": drillback,
-            })
-        elif finding_kind == "global_mutation":
-            findings.append({
-                "judgment": text,
-                "because": "Module-level mutable state modified inside this function.",
-                "where": where,
-                "what_to_do": "Consider passing state explicitly instead of mutating module-level objects.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "purity":
-            stable_points.append({
-                "judgment": f"{_fn_name(where)} is structurally pure",
-                "because": "No I/O, no side effects, no global state detected by AST.",
-                "where": where,
-                "drillback": drillback,
-            })
-        elif finding_kind == "guard_removed":
-            removed = claim.get("_removed_guards", [])
-            findings.append({
-                "judgment": f"Guard removed: {text}",
-                "because": f"Validation or safety check was removed: {', '.join(removed[:2])}" if removed else "if/raise/assert lines removed without replacement.",
-                "where": where,
-                "what_to_do": "Verify the guard removal was intentional and safe.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "error_path_changed":
-            findings.append({
-                "judgment": f"Error handling changed: {text}",
-                "because": "try/except/raise/logging lines were modified.",
-                "where": where,
-                "what_to_do": "Review the error path for correctness.",
-                "drillback": drillback,
-            })
-        elif finding_kind == "test_gap":
-            findings.append({
-                "judgment": f"No test delta: {text}",
-                "because": "Behavior changed but no test file was modified in this diff.",
-                "where": where,
-                "what_to_do": "Add or update tests for the changed behavior.",
-                "drillback": drillback,
-            })
-        elif finding_kind in ("significant_removal", "large_addition", "file_change"):
-            findings.append({
-                "judgment": text,
-                "because": f"Diff structural signal: {finding_kind.replace('_', ' ')}.",
-                "where": where,
-                "what_to_do": "Review the change.",
-                "drillback": drillback,
-            })
-        # Thread-specific rendering by mother type (prose, not structural)
-        elif mother_type == "UNCERTAINTY":
-            open_questions.append({
-                "judgment": f"This is still unclear: {text}",
-                "because": "Expressed as uncertainty.",
-                "where": where,
-                "what_to_do": "Confirm or resolve before relying on it.",
-                "drillback": drillback,
-            })
-        elif mother_type == "CONSTRAINT" and _looks_actionable(text):
-            findings.append({
-                "judgment": f"Someone needs to act: {text}",
-                "because": "This is an obligation or required action.",
-                "where": where,
-                "what_to_do": "Assign it or confirm it's handled.",
-                "drillback": drillback,
-            })
-        elif mother_type == "CONSTRAINT":
-            findings.append({
-                "judgment": f"Requirement: {text}",
-                "because": "Expressed as a constraint.",
-                "where": where,
-                "what_to_do": "Verify it's being respected.",
-                "drillback": drillback,
-            })
-        elif mother_type == "WITNESS":
-            stable_points.append({
-                "judgment": f"Reported: {text}",
-                "because": "Attributed to a source or observation.",
-                "where": where,
-                "drillback": drillback,
-            })
-        elif mother_type == "CONTRACT":
-            lower = text.lower()
-            surface_act = claim.get("epistemic_event", "")
+        # Thread/document claims: normalize the judgment text
+        judgment = _normalize_judgment(jtype, text)
 
-            # Challenge check: text framed as a question about a prior decision
-            # is a challenge, not a stable point.
-            # "I thought we already decided on X" is challenging, not affirming.
-            _challenge_cues = (
-                "i thought we", "didn't we", "wasn't that",
-                "but we", "wait,", "hold on",
-            )
-            is_challenge = (
-                "?" in text
-                or any(cue in lower for cue in _challenge_cues)
-                or surface_act == "belief_revised"
-            )
-            if is_challenge:
-                open_questions.append({
-                    "judgment": f"Prior decision challenged: {text}",
-                    "because": "This questions or challenges an earlier agreement.",
-                    "where": where,
-                    "what_to_do": "Resolve whether the original decision still holds.",
-                    "drillback": drillback,
-                })
-            elif _looks_actionable(text):
-                findings.append({
-                    "judgment": f"Action item: {text}",
-                    "because": "This reads as a commitment to do something.",
-                    "where": where,
-                    "what_to_do": "Track it.",
-                    "drillback": drillback,
-                })
-            else:
-                # Explicit agreement/decision cues
-                _agreement_cues = (
-                    "we decided", "we agreed", "decided to", "the plan is",
-                    "confirmed", "locked in", "set for",
-                    "agreed", "makes sense", "sounds good", "perfect",
-                    "let's go with", "let's do", "will do",
-                )
-                is_agreement = any(cue in lower for cue in _agreement_cues)
-                if is_agreement:
-                    stable_points.append({
-                        "judgment": f"Agreed: {text}",
-                        "because": "Expressed as agreement or decision.",
-                        "where": where,
-                        "drillback": drillback,
-                    })
-                else:
-                    stable_points.append({
-                        "judgment": f"Stated: {text}",
-                        "because": "Expressed as a factual claim.",
-                        "where": where,
-                        "drillback": drillback,
-                    })
-        elif mother_type == "RELATION":
-            stable_points.append({
-                "judgment": f"Noted: {text}",
-                "because": "Relates to other points.",
-                "where": where,
-                "drillback": drillback,
-            })
-        else:
-            stable_points.append({
-                "judgment": text,
-                "because": "Promoted without a specific finding kind.",
-                "where": where,
-                "drillback": drillback,
-            })
+        card = {
+            "judgment": judgment,
+            "where": where,
+            "drillback": drillback,
+        }
 
+        # Type-specific framing
+        if jtype == RISK:
+            card["because"] = _risk_reason(claim)
+            card["what_to_do"] = _risk_action(claim)
+        elif jtype == ACTION:
+            card["because"] = "This is an obligation or required action."
+            card["what_to_do"] = "Assign it or confirm it's handled."
+        elif jtype == OPEN_Q:
+            card["because"] = _question_reason(claim)
+            card["what_to_do"] = "Resolve before relying on it."
+        elif jtype == STABLE:
+            card["because"] = _stable_reason(claim)
+
+        typed[jtype].append(card)
+
+    # Contested → risks
     for claim in contested:
         text = claim.get("text", "")
-        findings.append({
-            "judgment": f"This smells funny: {text}",
-            "because": "Conflicting signals — this claim is contested by other evidence in the thread.",
+        typed[RISK].append({
+            "judgment": _normalize_text(text),
+            "because": "Conflicting signals — contested by other evidence.",
             "where": {"text": text, "clause_id": claim.get("clause_id", "")},
             "what_to_do": "Resolve the conflict before relying on it.",
             "drillback": {"status": "contested"},
         })
 
+    # Deferred → weak open questions (only if substantive)
     for claim in deferred:
         text = claim.get("text", claim.get("claim_text", ""))
+        if len(text.strip()) < 20:
+            continue  # too thin to surface
         reason = claim.get("_defer_reason", "insufficient evidence")
-        open_questions.append({
-            "judgment": f"Not enough to go on: {text}",
+        typed[OPEN_Q].append({
+            "judgment": _normalize_text(text),
             "because": f"Deferred — {reason}.",
             "where": {"text": text, "clause_id": claim.get("clause_id", "")},
             "what_to_do": "Gather more evidence or clarify.",
             "drillback": {"status": "deferred", "reason": reason},
         })
 
-    # Build summary
-    total_findings = len(findings) + len(open_questions)
-    if total_findings == 0 and stable_points:
+    # --- Compress each group ---
+    findings = _compress_group(typed[RISK] + typed[ACTION])
+    stable_points = _compress_group(typed[STABLE])
+    open_questions = _compress_group(typed[OPEN_Q])
+    # META is suppressed — not rendered
+
+    # --- Build summary ---
+    total_issues = len(findings) + len(open_questions)
+    if total_issues == 0 and stable_points:
         summary = "Everything looks stable. No smells detected."
-    elif total_findings == 0:
+    elif total_issues == 0:
         summary = "Not enough signal to judge. Try a longer thread."
-    elif len(findings) > len(stable_points):
-        summary = f"{len(findings)} thing{'s' if len(findings) != 1 else ''} smell{'s' if len(findings) == 1 else ''} off. {len(open_questions)} open question{'s' if len(open_questions) != 1 else ''}."
     else:
-        summary = f"Mostly stable, but {len(findings)} finding{'s' if len(findings) != 1 else ''} and {len(open_questions)} open question{'s' if len(open_questions) != 1 else ''} to check."
+        parts = []
+        if findings:
+            parts.append(f"{len(findings)} concern{'s' if len(findings) != 1 else ''}")
+        if open_questions:
+            parts.append(f"{len(open_questions)} open question{'s' if len(open_questions) != 1 else ''}")
+        summary = f"{'. '.join(parts)}."
+        if stable_points:
+            summary += f" {len(stable_points)} point{'s' if len(stable_points) != 1 else ''} look{'s' if len(stable_points) == 1 else ''} stable."
 
     return {
         "summary": summary,
@@ -304,7 +347,156 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Legacy projections (for consumer page / backward compat)
+# Code finding rendering (unchanged — these are already structural)
+# ---------------------------------------------------------------------------
+
+def _render_code_finding(
+    claim: dict[str, Any],
+    finding_kind: str,
+    where: dict[str, Any],
+    drillback: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Render a code-lane finding. Returns None to skip."""
+    text = claim.get("text", "")
+    signals = claim.get("_signals", [])
+
+    if finding_kind == "impurity":
+        signal_detail = f": {', '.join(signals)}" if signals else ""
+        return {
+            "judgment": f"{_fn_name(where)} has side effects{signal_detail}",
+            "because": "AST analysis found I/O or impure operations.",
+            "where": where,
+            "what_to_do": "Review whether the impurity is intentional.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "violation":
+        return {
+            "judgment": f"{_fn_name(where)}: {_violation_text(text)}",
+            "because": "Structural analysis found a constraint violation.",
+            "where": where,
+            "what_to_do": "Review the function's behavior vs its contract.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "exception_safety":
+        return {
+            "judgment": f"{_fn_name(where)}: {_violation_text(text)}",
+            "because": "Exception handling issue detected by AST.",
+            "where": where,
+            "what_to_do": "Add proper error handling.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "guard_present":
+        suffix = text.split(" has ", 1)[1] if " has " in text else "has validation"
+        return {
+            "judgment": f"{_fn_name(where)} {suffix}",
+            "because": "Input validation guards detected by AST.",
+            "where": where,
+            "drillback": drillback,
+        }
+    elif finding_kind == "purity":
+        return {
+            "judgment": f"{_fn_name(where)} is structurally pure",
+            "because": "No I/O, no side effects, no global state.",
+            "where": where,
+            "drillback": drillback,
+        }
+    elif finding_kind == "global_mutation":
+        return {
+            "judgment": _normalize_text(text),
+            "because": "Module-level mutable state modified.",
+            "where": where,
+            "what_to_do": "Consider passing state explicitly.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "guard_removed":
+        return {
+            "judgment": f"Guard removed: {_normalize_text(text)}",
+            "because": "Validation or safety check was removed.",
+            "where": where,
+            "what_to_do": "Verify the removal was intentional and safe.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "error_path_changed":
+        return {
+            "judgment": f"Error handling changed: {_normalize_text(text)}",
+            "because": "try/except/raise/logging lines were modified.",
+            "where": where,
+            "what_to_do": "Review the error path for correctness.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "test_gap":
+        return {
+            "judgment": f"No test delta: {_normalize_text(text)}",
+            "because": "Behavior changed but no test file was modified.",
+            "where": where,
+            "what_to_do": "Add or update tests.",
+            "drillback": drillback,
+        }
+    elif finding_kind == "provenance_gap":
+        return {
+            "judgment": f"External dependency: {_normalize_text(text)}",
+            "because": "This import appears external to the repo.",
+            "where": where,
+            "what_to_do": "Verify the dependency source.",
+            "drillback": drillback,
+        }
+    elif finding_kind in ("significant_removal", "large_addition", "file_change"):
+        return {
+            "judgment": _normalize_text(text),
+            "because": f"Diff structural signal: {finding_kind.replace('_', ' ')}.",
+            "where": where,
+            "what_to_do": "Review the change.",
+            "drillback": drillback,
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Reason generators (replaces hardcoded prefix strings)
+# ---------------------------------------------------------------------------
+
+def _risk_reason(claim: dict[str, Any]) -> str:
+    mother = claim.get("mother_type", "")
+    if mother == "CONSTRAINT":
+        return "Expressed as a constraint or requirement."
+    if claim.get("_contested"):
+        return "Conflicting signals in the thread."
+    return "This concern has not been fully resolved."
+
+
+def _risk_action(claim: dict[str, Any]) -> str:
+    mother = claim.get("mother_type", "")
+    if mother == "CONSTRAINT" and _looks_actionable(claim.get("text", "")):
+        return "Assign it or confirm it's handled."
+    return "Verify this is being addressed."
+
+
+def _question_reason(claim: dict[str, Any]) -> str:
+    event = claim.get("epistemic_event", "")
+    if event == "belief_revised":
+        return "This challenges or revises a prior position."
+    if event == "question_posed":
+        return "Explicitly raised as a question."
+    if "?" in claim.get("text", ""):
+        return "Posed as a question in the thread."
+    return "Expressed as uncertainty."
+
+
+def _stable_reason(claim: dict[str, Any]) -> str:
+    event = claim.get("epistemic_event", "")
+    mother = claim.get("mother_type", "")
+    if event == "tension_resolved":
+        return "A prior concern was explicitly resolved."
+    if mother == "WITNESS":
+        return "Attributed to a source or observation."
+    lower = claim.get("text", "").lower()
+    if any(cue in lower for cue in ("agreed", "decided", "confirmed", "sounds good")):
+        return "Expressed as agreement or decision."
+    return "Expressed as a settled proposition."
+
+
+# ---------------------------------------------------------------------------
+# Legacy projections (unchanged)
 # ---------------------------------------------------------------------------
 
 def project_consumer(governed_state: dict[str, Any]) -> dict[str, Any]:
@@ -361,63 +553,6 @@ def project_consumer(governed_state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def project_pro(governed_state: dict[str, Any]) -> dict[str, Any]:
-    """Project governed state into professional review cards."""
-    promoted = governed_state.get("promoted", [])
-    contested = governed_state.get("contested", [])
-    deferred = governed_state.get("deferred", [])
-
-    safe_to_rely_on = []
-    still_uncertain = []
-    needs_human_judgment = []
-    commitments = []
-    constraints = []
-    evidence = []
-
-    for claim in promoted:
-        mother_type = claim.get("mother_type", "")
-        text = claim.get("text", "")
-        card = {"text": text, "mother_type": mother_type}
-
-        if mother_type == "CONTRACT":
-            commitments.append(card)
-            safe_to_rely_on.append(card)
-        elif mother_type == "CONSTRAINT":
-            constraints.append(card)
-            safe_to_rely_on.append(card)
-        elif mother_type == "WITNESS":
-            evidence.append(card)
-            safe_to_rely_on.append(card)
-        elif mother_type == "UNCERTAINTY":
-            still_uncertain.append(card)
-        else:
-            safe_to_rely_on.append(card)
-
-    for claim in contested:
-        needs_human_judgment.append({"text": claim.get("text", ""), "reason": "contested"})
-
-    for claim in deferred:
-        needs_human_judgment.append({
-            "text": claim.get("text", claim.get("claim_text", "")),
-            "reason": claim.get("_defer_reason", "insufficient evidence"),
-        })
-
-    return {
-        "safe_to_rely_on": safe_to_rely_on,
-        "still_uncertain": still_uncertain,
-        "needs_human_judgment": needs_human_judgment,
-        "commitments": commitments,
-        "constraints": constraints,
-        "evidence": evidence,
-        "contested": [{"text": c.get("text", "")} for c in contested],
-        "summary": {
-            "safe_count": len(safe_to_rely_on),
-            "uncertain_count": len(still_uncertain),
-            "judgment_count": len(needs_human_judgment),
-        },
-    }
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -431,7 +566,6 @@ _ACTION_SIGNALS = frozenset({
 
 
 def _fn_name(where: dict) -> str:
-    """Extract a clean function name from a where anchor."""
     fn = where.get("function", "")
     if fn:
         return fn
@@ -439,14 +573,21 @@ def _fn_name(where: dict) -> str:
 
 
 def _violation_text(text: str) -> str:
-    """Clean up violation text for rendering."""
-    # Strip the "function:line — " prefix if present
     if " — " in text:
         return text.split(" — ", 1)[1]
     return text
 
 
 def _looks_actionable(text: str) -> bool:
-    """Heuristic: does this text look like something someone needs to do?"""
     lower = text.lower()
-    return any(signal in lower for signal in _ACTION_SIGNALS)
+    # Use word boundary matching — "checkout" should not match "check"
+    for signal in _ACTION_SIGNALS:
+        if " " in signal:
+            # Multi-word: substring is fine ("need to", "make sure")
+            if signal in lower:
+                return True
+        else:
+            # Single word: require word boundary
+            if re.search(r'\b' + re.escape(signal) + r'\b', lower):
+                return True
+    return False
