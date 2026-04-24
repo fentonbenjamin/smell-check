@@ -355,13 +355,15 @@ def tagger_to_typed_units(
         event_type = tag.get("event_type", "")
 
         # Type-aware confidence floor:
-        # Questions, challenges, and revisions are near-sacred signals —
+        # Questions, challenges, revisions, and resolutions are near-sacred —
         # they need stronger evidence to suppress than to keep.
-        # Other signals use the standard 0.4 threshold.
-        _CHALLENGE_EVENTS = frozenset({
+        # Agreement/formation signals also get a lower floor to capture
+        # explicit agreement language even at low tagger confidence.
+        _SACRED_EVENTS = frozenset({
             "question_posed", "belief_revised", "contradiction_detected",
+            "tension_resolved", "belief_formed",
         })
-        min_conf = 0.2 if event_type in _CHALLENGE_EVENTS else 0.4
+        min_conf = 0.2 if event_type in _SACRED_EVENTS else 0.4
         if conf < min_conf:
             continue
 
