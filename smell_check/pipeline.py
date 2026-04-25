@@ -15,6 +15,7 @@ Projections (consumer cards, pro cards) are lenses applied downstream.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .epistemic_tagger import classify_turn
