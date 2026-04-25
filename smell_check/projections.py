@@ -226,7 +226,7 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
     Pipeline: primitives → coagulator (laws) → judgments → render
     One concern → one judgment card → supporting evidence behind it.
     """
-    from .atlas import claims_to_primitives, coagulate_decisions, Judgment
+    from .atlas import claims_to_primitives, coagulate_decisions, coagulate_concerns, Judgment, _extract_governing_subject
 
     promoted = governed_state.get("promoted", [])
     contested = governed_state.get("contested", [])
@@ -268,6 +268,10 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
 
     # Run decision coagulator (handles all primitive kinds now)
     judgments = coagulate_decisions(primitives)
+
+    # Run concern coagulator — merges operational signals into readiness concerns
+    governing_subject = _extract_governing_subject(primitives)
+    judgments = coagulate_concerns(judgments, governing_subject)
 
     # --- Render judgments into output cards ---
     findings = list(code_findings)

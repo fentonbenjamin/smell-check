@@ -226,6 +226,13 @@ OPERATIONAL_LAWS: list[Law] = [
         precedence=75,
     ),
     Law(
+        name="unresolved_dependency_blocks_go_ahead",
+        description="Unresolved operational dependencies block a confident go-ahead.",
+        when="multiple operational concerns exist without resolution",
+        then="emit one Concern with all blockers",
+        precedence=65,
+    ),
+    Law(
         name="deferral_is_risk",
         description="Deferring a dependency is a risk signal, not resolution.",
         when="response to a concern is 'we'll deal with it later'",
@@ -545,6 +552,112 @@ def coagulate_decisions(
     return judgments
 
 
+# ---------------------------------------------------------------------------
+# Concern Coagulator — merges operational signals into readiness concerns
+# ---------------------------------------------------------------------------
+
+_OPERATIONAL_MOTIFS = frozenset({"ownership_gap", "evidence_challenge", "operational_requirement"})
+
+
+def coagulate_concerns(
+    judgments: list[Judgment],
+    governing_subject: str = "",
+) -> list[Judgment]:
+    """Concern coagulator: merge operational judgments into readiness concerns.
+
+    Takes the output of coagulate_decisions and:
+    1. Groups operational judgments (ownership_gap, evidence_challenge,
+       operational_requirement) into readiness clusters
+    2. Emits one Concern per cluster with supporting evidence
+    3. Passes through non-operational judgments unchanged
+
+    Law: unresolved operational dependency blocks confident go-ahead.
+    Evidence fragments become support, not separate top-level findings.
+
+    Pure function.
+    """
+    # Separate operational vs non-operational judgments
+    operational: list[Judgment] = []
+    passthrough: list[Judgment] = []
+
+    for j in judgments:
+        if j.motif in _OPERATIONAL_MOTIFS:
+            operational.append(j)
+        else:
+            passthrough.append(j)
+
+    if len(operational) < 3:
+        # Too few signals to coagulate — keep as independent findings
+        return judgments
+
+    # Collect all blockers and evidence from operational judgments
+    all_blockers: list[str] = []
+    all_evidence: list[str] = []
+    all_anchors: list[dict[str, Any]] = []
+    all_laws: list[str] = []
+    concern_parts: list[str] = []
+    open_questions: list[Judgment] = []
+
+    for j in operational:
+        # Operational requirements stay as individual items in the evidence
+        all_evidence.extend(j.evidence)
+        all_anchors.extend(j.anchors)
+        all_blockers.extend(j.blockers)
+        for law in j.laws_applied:
+            if law not in all_laws:
+                all_laws.append(law)
+
+        # Build a readable concern part from each operational judgment
+        if j.motif == "ownership_gap":
+            concern_parts.append(f"Ownership unclear: {j.subject}")
+            # Also emit as an open question
+            open_questions.append(Judgment(
+                kind="OpenQuestion",
+                subject=j.subject,
+                state="open",
+                why="Ownership or responsibility is unassigned.",
+                anchors=j.anchors,
+                next_step="Assign an owner.",
+                laws_applied=j.laws_applied,
+                motif=j.motif,
+                evidence=j.evidence,
+            ))
+        elif j.motif == "evidence_challenge":
+            concern_parts.append(f"Evidence challenged: {j.subject}")
+        elif j.motif == "operational_requirement":
+            concern_parts.append(j.subject)
+
+    # Compose the concern
+    if governing_subject:
+        concern_subject = f"{governing_subject[0].upper()}{governing_subject[1:]} has operational readiness gaps"
+    elif concern_parts:
+        concern_subject = "Operational readiness has gaps"
+    else:
+        concern_subject = "Unresolved operational concerns"
+
+    # Build the why from the parts
+    if len(concern_parts) <= 3:
+        why = ". ".join(concern_parts) + "."
+    else:
+        why = f"{len(concern_parts)} operational issues: {'. '.join(concern_parts[:2])}. And {len(concern_parts) - 2} more."
+
+    # The main concern
+    concern = Judgment(
+        kind="Concern",
+        subject=concern_subject,
+        state="active",
+        why=why,
+        anchors=all_anchors,
+        blockers=all_blockers or ["Unresolved operational dependencies."],
+        next_step="Resolve operational gaps before proceeding with confidence.",
+        laws_applied=all_laws + ["unresolved_dependency_blocks_go_ahead"],
+        motif="concern_v0",
+        evidence=all_evidence,
+    )
+
+    return passthrough + [concern] + open_questions
+
+
 def _dedup_by_subject(
     judgments: list[Judgment],
     law_by_name: dict[str, Law],
@@ -605,6 +718,7 @@ def _dedup_by_subject(
 
 # Proposal/decision verbs that introduce the governing subject
 _PROPOSAL_CUES = (
+    "we're shipping ", "we're launching ", "we're deploying ", "we're releasing ",
     "we should ", "let's ", "the plan is ", "i propose ", "i think we should ",
     "we're going to ", "we're going with ", "going to ", "we need to ",
     "we want to ", "i want to ", "should we ", "can we ", "why don't we ",
@@ -635,11 +749,28 @@ def _extract_governing_subject(primitives: list[Primitive]) -> str:
                 if 10 < len(subject) < 120:
                     return subject
 
-    # Fallback: longest non-question, non-hedge primitive
-    substantive = [p for p in primitives if p.kind not in ("question",) and len(p.text) > 20]
-    if substantive:
-        best = max(substantive, key=lambda p: len(p.text))
-        return _normalize(best.text)
+    # Also check ALL primitives (including questions) for proposal language
+    # "We're shipping X" might be classified as a question by the tagger
+    for p in primitives:
+        lower = p.text.lower()
+        for cue in _PROPOSAL_CUES:
+            if cue in lower:
+                idx = lower.index(cue) + len(cue)
+                rest = p.text[idx:].strip()
+                for sep in (".\n", ".\r", ". ", "?\n", "?\r", "? ", "\n"):
+                    end = rest.find(sep)
+                    if 0 < end < 120:
+                        rest = rest[:end]
+                        break
+                subject = rest.strip().rstrip(".")
+                if 10 < len(subject) < 120:
+                    return subject
+
+    # Fallback: first substantive primitive (the opening statement is usually the topic)
+    for p in primitives:
+        clean = _normalize(p.text)
+        if len(clean) > 20:
+            return clean
 
     return ""
 
