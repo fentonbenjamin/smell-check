@@ -368,6 +368,17 @@ def _build_combined_app(port: int):
                 })
         try:
             result = verify_custody(body)
+            # If valid, also project judgments from the governed state
+            # so third-party verifiers get typed results, not just a boolean
+            gs = body.get("authoritative_output", {}).get("governed_state")
+            if result.get("valid") and gs:
+                judgments = project_smell_check(gs)
+                result["judgments"] = {
+                    "summary": judgments.get("summary", ""),
+                    "findings": judgments.get("findings", []),
+                    "stable_points": judgments.get("stable_points", []),
+                    "open_questions": judgments.get("open_questions", []),
+                }
             return JSONResponse(result)
         except Exception as e:
             return JSONResponse({
