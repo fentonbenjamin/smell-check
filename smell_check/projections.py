@@ -302,8 +302,13 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
 
     # --- Build summary ---
     total_issues = len(findings) + len(open_questions)
+    # Estimate input length from evidence in all judgments
+    total_input = sum(len(c.get("text", "")) for c in promoted + contested + deferred)
+
     if total_issues == 0 and stable_points:
         summary = "Everything looks stable. No smells detected."
+    elif total_issues == 0 and total_input > 200:
+        summary = "No strong signals detected. The input may be descriptive rather than decisional."
     elif total_issues == 0:
         summary = "Not enough signal to judge. Try a longer thread."
     else:

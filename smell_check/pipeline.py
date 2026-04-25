@@ -180,10 +180,10 @@ def analyze_thread(
 
     elif input_kind == "document":
         # DOCUMENT LANE — specs, plans, critiques, bug reports
-        # The tagger runs but with heavy filtering:
+        # The tagger runs but with filtering:
         # - suppress content inside code blocks (quoted examples, not assertions)
         # - suppress file paths and schema references
-        # - require higher confidence (0.7) to promote
+        # - require moderately higher confidence (0.5) to promote
         # - normative "should" in document prose is guidance, not an obligation
         pipeline_result = run_pipeline_with_receipts(
             text, topic_context, turn_id=turn_id, actor=actor,
@@ -212,7 +212,7 @@ def analyze_thread(
             if _is_document_noise(span):
                 continue
             # Require higher confidence for document mode
-            if tag.get("confidence", 0) < 0.7:
+            if tag.get("confidence", 0) < 0.5:
                 continue
             filtered_tags.append(tag)
 
