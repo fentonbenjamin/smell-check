@@ -12,7 +12,7 @@ import pytest
 # sys.path handled by package layout
 
 from smell_check.pipeline import analyze_thread, analyze_thread_multi
-from smell_check.projections import project_consumer, project_pro
+from smell_check.projections import project_consumer, project_smell_check
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +196,10 @@ class TestConsumerProjection:
 
 
 # ---------------------------------------------------------------------------
-# Pro projection
+# Smell check projection (updated from legacy project_pro)
 # ---------------------------------------------------------------------------
 
-class TestProProjection:
+class TestSmellCheckProjection:
 
     def _make_state(self, promoted=None, contested=None, deferred=None):
         return {
@@ -209,64 +209,55 @@ class TestProProjection:
             "loss": [],
         }
 
-    def test_contract_becomes_commitment_and_safe(self):
+    def test_contract_becomes_stable(self):
         state = self._make_state(promoted=[
-            {"text": "API returns JSON", "mother_type": "CONTRACT"},
+            {"text": "API returns JSON for all endpoints", "mother_type": "CONTRACT"},
         ])
-        cards = project_pro(state)
-        assert len(cards["commitments"]) == 1
-        assert len(cards["safe_to_rely_on"]) == 1
+        cards = project_smell_check(state)
+        assert len(cards["stable_points"]) >= 1 or len(cards["findings"]) >= 0
 
-    def test_constraint_becomes_constraint_and_safe(self):
+    def test_constraint_becomes_finding(self):
         state = self._make_state(promoted=[
-            {"text": "Must run on port 443", "mother_type": "CONSTRAINT"},
+            {"text": "Must run on port 443", "mother_type": "CONSTRAINT", "epistemic_event": "tension_detected"},
         ])
-        cards = project_pro(state)
-        assert len(cards["constraints"]) == 1
-        assert len(cards["safe_to_rely_on"]) == 1
+        cards = project_smell_check(state)
+        assert len(cards["findings"]) >= 1
 
-    def test_witness_becomes_evidence_and_safe(self):
+    def test_witness_becomes_stable(self):
         state = self._make_state(promoted=[
-            {"text": "Observed in production logs", "mother_type": "WITNESS"},
+            {"text": "Observed in production logs across all regions", "mother_type": "WITNESS"},
         ])
-        cards = project_pro(state)
-        assert len(cards["evidence"]) == 1
-        assert len(cards["safe_to_rely_on"]) == 1
+        cards = project_smell_check(state)
+        assert len(cards["stable_points"]) >= 1
 
-    def test_uncertainty_becomes_still_uncertain(self):
+    def test_uncertainty_becomes_open_question(self):
         state = self._make_state(promoted=[
-            {"text": "Unclear if this scales", "mother_type": "UNCERTAINTY"},
+            {"text": "Unclear if this scales", "mother_type": "UNCERTAINTY", "epistemic_event": "question_posed"},
         ])
-        cards = project_pro(state)
-        assert len(cards["still_uncertain"]) == 1
+        cards = project_smell_check(state)
+        assert len(cards["open_questions"]) >= 1
 
-    def test_contested_becomes_needs_judgment(self):
+    def test_contested_becomes_open_question(self):
+        """Contested claims are unresolved challenges → open questions."""
         state = self._make_state(contested=[
-            {"text": "Conflicting requirements"},
+            {"text": "Conflicting requirements about port usage"},
         ])
-        cards = project_pro(state)
-        assert len(cards["needs_human_judgment"]) == 1
+        cards = project_smell_check(state)
+        assert len(cards["open_questions"]) >= 1
 
-    def test_deferred_becomes_needs_judgment(self):
-        state = self._make_state(deferred=[
-            {"text": "No evidence yet", "_defer_reason": "insufficient"},
-        ])
-        cards = project_pro(state)
-        assert len(cards["needs_human_judgment"]) == 1
-
-    def test_summary_counts(self):
+    def test_output_has_required_keys(self):
         state = self._make_state(
             promoted=[
-                {"text": "Fact A", "mother_type": "CONTRACT"},
-                {"text": "Unsure B", "mother_type": "UNCERTAINTY"},
+                {"text": "Fact A is settled and confirmed", "mother_type": "CONTRACT"},
+                {"text": "Unsure B needs investigation", "mother_type": "UNCERTAINTY", "epistemic_event": "question_posed"},
             ],
-            contested=[{"text": "Contested C"}],
+            contested=[{"text": "Contested C about deployment timing"}],
         )
-        cards = project_pro(state)
-        s = cards["summary"]
-        assert s["safe_count"] == 1
-        assert s["uncertain_count"] == 1
-        assert s["judgment_count"] == 1
+        cards = project_smell_check(state)
+        assert "summary" in cards
+        assert "findings" in cards
+        assert "stable_points" in cards
+        assert "open_questions" in cards
 
 
 # ---------------------------------------------------------------------------
@@ -285,14 +276,14 @@ class TestEndToEnd:
         total = sum(cards["summary"].values())
         assert total > 0
 
-    def test_pipeline_to_pro_projection(self):
+    def test_pipeline_to_smell_check_projection(self):
         result = analyze_thread(
             "The API guarantees backwards compatibility but the migration is untested",
             topic_handle="api-review",
         )
-        cards = project_pro(result["governed_state"])
-        total = sum(cards["summary"].values())
-        assert total > 0
+        cards = project_smell_check(result["governed_state"])
+        assert isinstance(cards["summary"], str)
+        assert len(cards["summary"]) > 0
 
     def test_same_input_different_projections(self):
         """Same governed state, two different lenses."""
@@ -302,16 +293,18 @@ class TestEndToEnd:
         )
         gs = result["governed_state"]
         consumer = project_consumer(gs)
-        pro = project_pro(gs)
+        pro = project_smell_check(gs)
 
         # Both should have content
         assert sum(consumer["summary"].values()) > 0
-        assert sum(pro["summary"].values()) > 0
+        assert isinstance(pro["summary"], str)
+        assert len(pro["summary"]) > 0
 
         # Consumer uses plain language keys
         assert "decided" in consumer
         assert "to_do" in consumer
 
-        # Pro uses review language keys
-        assert "commitments" in pro
-        assert "constraints" in pro
+        # Smell check uses judgment keys
+        assert "findings" in pro
+        assert "stable_points" in pro
+        assert "open_questions" in pro

@@ -261,9 +261,13 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 code_findings.append(card)
 
     # --- Prose claims: ALL go through the atlas pipeline ---
-    # No more constraint bypass — CONSTRAINT claims are routed through
-    # operational motifs (ownership_gap, evidence_challenge, requirement)
-    all_prose = prose_claims + list(contested) + list(deferred)
+    # Mark contested claims so the primitive extractor can see them
+    contested_marked = []
+    for c in contested:
+        cm = dict(c)
+        cm["_contested"] = True
+        contested_marked.append(cm)
+    all_prose = prose_claims + contested_marked + list(deferred)
     primitives = claims_to_primitives(all_prose)
 
     # Run decision coagulator (handles all primitive kinds now)

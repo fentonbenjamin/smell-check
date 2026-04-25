@@ -20,7 +20,7 @@ from smell_check.chamber import (
     verify_custody,
 )
 from smell_check.stamp import h
-from smell_check.projections import project_consumer, project_pro
+from smell_check.projections import project_consumer, project_smell_check
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +259,7 @@ class TestProjectionBoundary:
 
         # Projections are OUTSIDE the boundary — derived, not authoritative
         consumer = project_consumer(gs)
-        pro = project_pro(gs)
+        pro = project_smell_check(gs)
 
         # Projections exist but are not in the custody record
         assert "cards" not in record  # no cards inside the boundary
@@ -268,7 +268,9 @@ class TestProjectionBoundary:
 
         # Projections are derived from the governed state
         assert isinstance(consumer["decided"], list)
-        assert isinstance(pro["safe_to_rely_on"], list)
+        assert "findings" in pro
+        assert "stable_points" in pro
+        assert "open_questions" in pro
 
 
 # ---------------------------------------------------------------------------

@@ -170,7 +170,7 @@ DECISION_MOTIFS: list[Motif] = [
         required_laws=["reversal_supersedes_prior", "unresolved_challenge_emits_open_question"],
         output_type="OpenQuestion",
         examples=["We should switch to Postgres. → But we already decided on MySQL?"],
-        anti_examples=[],
+        anti_examples=["What time is standup tomorrow?", "Can you review my PR?"],
     ),
     Motif(
         name="hedged_agreement",
@@ -179,7 +179,7 @@ DECISION_MOTIFS: list[Motif] = [
         trigger_events=["belief_formed"],
         blocker_kinds=[],
         blocker_events=[],
-        required_laws=["hedge_downgrades_stability"],
+        required_laws=["hedge_downgrades_stability", "meta_not_stable"],
         output_type="ProvisionalDecision",
         examples=["Yeah, probably.", "I guess. Let me know.", "Sure, when you get a chance."],
         anti_examples=["Agreed. Let's do it.", "Perfect. I'll start tomorrow."],
@@ -249,7 +249,7 @@ OPERATIONAL_MOTIFS: list[Motif] = [
         trigger_events=["tension_detected"],
         blocker_kinds=[],
         blocker_events=[],
-        required_laws=["ownership_gap_is_risk"],
+        required_laws=["ownership_gap_is_risk", "unresolved_dependency_blocks_go_ahead"],
         output_type="OpenQuestion",
         examples=["Who's going to be on call?", "Can someone own the runbook?"],
         anti_examples=["I'll handle it.", "Dev B is on point for this."],
@@ -273,7 +273,7 @@ OPERATIONAL_MOTIFS: list[Motif] = [
         trigger_events=["tension_detected"],
         blocker_kinds=[],
         blocker_events=[],
-        required_laws=[],
+        required_laws=["deferral_is_risk"],
         output_type="Concern",
         emit_per_primitive=True,  # each requirement is independent
         examples=["We need the runbook before go-live.", "We need to decide by Friday."],
@@ -873,8 +873,12 @@ def claims_to_primitives(claims: list[dict[str, Any]]) -> list[Primitive]:
         mother_type = c.get("mother_type", "")
         event = c.get("epistemic_event", "")
 
+        # 0. Contested claims are challenges by definition
+        if c.get("_contested"):
+            kind = "challenge"
+            stance = "negative"
         # 1. Resolution (highest priority — settles challenges)
-        if event == "tension_resolved" or any(
+        elif event == "tension_resolved" or any(
             cue in lower for cue in ("confirmed", "let's go with", "perfect")
         ):
             kind = "resolution"
@@ -999,6 +1003,102 @@ PIPELINE_LAYERS = (
     "judgments",
     "render",
 )
+
+
+# ---------------------------------------------------------------------------
+# Growth governance — motif admission + coverage tracking
+# ---------------------------------------------------------------------------
+
+def verify_motif_admission(motif: Motif) -> tuple[bool, list[str]]:
+    """Verify a motif meets the admission bar. Pure.
+
+    Every motif must have:
+    1. At least one positive example
+    2. At least one anti-example (counterexample)
+    3. Trigger kinds or events defined
+    4. An output type
+    5. At least one named law hook (or explicit empty with justification)
+
+    Returns (ok, errors).
+    """
+    errors = []
+    if not motif.examples:
+        errors.append(f"'{motif.name}': no positive examples")
+    if not motif.anti_examples:
+        errors.append(f"'{motif.name}': no anti-examples (counterexamples required)")
+    if not motif.trigger_kinds and not motif.trigger_events:
+        errors.append(f"'{motif.name}': no trigger conditions")
+    if not motif.output_type:
+        errors.append(f"'{motif.name}': no output type")
+    # Law hook: either has required_laws or is in a known exception list
+    # operational_requirement is explicitly law-free (it's a passthrough)
+    _LAW_FREE_OK = {"operational_requirement"}
+    if not motif.required_laws and motif.name not in _LAW_FREE_OK:
+        errors.append(f"'{motif.name}': no required_laws (add laws or justify exception)")
+    return len(errors) == 0, errors
+
+
+def verify_all_motif_admissions() -> tuple[bool, list[str]]:
+    """Verify all motifs meet admission bar."""
+    all_errors = []
+    for motif in ALL_MOTIFS:
+        ok, errors = verify_motif_admission(motif)
+        all_errors.extend(errors)
+    return len(all_errors) == 0, all_errors
+
+
+# Corpus promotion tiers
+CORPUS_TIERS = {
+    "experimental": "Not yet validated. May change or be removed.",
+    "sentinel": "Tracked but non-blocking. Shows perception gaps.",
+    "hard_gate": "Blocking. Must pass for release.",
+    "atlas_seed": "Candidate for inclusion in the Smell Atlas.",
+}
+
+
+def coverage_report() -> dict[str, Any]:
+    """Generate a coverage dashboard for the atlas. Pure.
+
+    Tracks:
+    - motifs with no anti-examples
+    - laws with only one motif user
+    - contrast pairs vs motif count
+    - surfaces missing fixtures
+    """
+    # Motifs missing anti-examples
+    missing_anti = [m.name for m in ALL_MOTIFS if not m.anti_examples]
+
+    # Laws referenced by only one motif
+    law_users: dict[str, list[str]] = {}
+    for m in ALL_MOTIFS:
+        for law_name in m.required_laws:
+            law_users.setdefault(law_name, []).append(m.name)
+    single_user_laws = {
+        law: users[0] for law, users in law_users.items() if len(users) == 1
+    }
+
+    # Orphan laws (defined but not referenced by any motif)
+    all_referenced = set()
+    for m in ALL_MOTIFS:
+        all_referenced.update(m.required_laws)
+    orphan_laws = [l.name for l in ALL_LAWS if l.name not in all_referenced]
+
+    # Contrast pair coverage
+    motifs_with_contrast = set()
+    for pair in CONTRAST_PAIRS:
+        motifs_with_contrast.add(pair.motif_a)
+        motifs_with_contrast.add(pair.motif_b)
+    motifs_without_contrast = [m.name for m in ALL_MOTIFS if m.name not in motifs_with_contrast]
+
+    return {
+        "total_motifs": len(ALL_MOTIFS),
+        "total_laws": len(ALL_LAWS),
+        "total_contrast_pairs": len(CONTRAST_PAIRS),
+        "motifs_missing_anti_examples": missing_anti,
+        "single_user_laws": single_user_laws,
+        "orphan_laws": orphan_laws,
+        "motifs_without_contrast_pairs": motifs_without_contrast,
+    }
 
 
 def verify_pipeline_shape() -> tuple[bool, list[str]]:
