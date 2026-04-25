@@ -302,12 +302,17 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
 
     # --- Build summary ---
     total_issues = len(findings) + len(open_questions)
-    # Estimate input length from ALL claims (including those filtered by document lane)
-    total_input = sum(len(c.get("text", "")) for c in all_prose)
+    # Use classification tag count as a signal of input richness
+    # (works even when document lane filters all promoted claims)
+    classification = governed_state.get("classification", {})
+    tag_count = len(classification.get("tags", []))
+    claim_count = classification.get("claim_count", 0)
+    total_input = sum(len(c.get("text", "")) for c in promoted + contested + deferred)
+    input_is_substantial = total_input > 200 or tag_count > 3 or claim_count > 2
 
     if total_issues == 0 and stable_points:
         summary = "Everything looks stable. No smells detected."
-    elif total_issues == 0 and total_input > 200:
+    elif total_issues == 0 and input_is_substantial:
         summary = "No strong signals detected. The input may be descriptive rather than decisional."
     elif total_issues == 0:
         summary = "Not enough signal to judge. Try a longer thread."
