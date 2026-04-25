@@ -280,6 +280,17 @@ _CONFLICT_CUES = [
     ("that's different from", 4), ("doesn't match", 4), ("disagree", 5),
     ("contradicts", 5), ("conflicts with", 5), ("at odds", 4),
     ("wait,", 3), ("hold on", 3), ("no,", 3),
+    # Review/analytical conflict signals
+    ("is broken", 5), ("is currently broken", 5), ("is stale", 4),
+    ("out of sync", 5), ("no longer matches", 5), ("no longer defines", 5),
+    ("never populates", 5), ("never fills", 4),
+    ("diverges from", 5), ("doesn't match", 4),
+    ("fails before", 5), ("fails to", 4),
+    ("the main risk", 5), ("the risk is", 5), ("risks are", 4),
+    ("false confidence", 5), ("false positive", 4), ("false negative", 4),
+    ("regression", 4), ("silently regress", 5),
+    ("drift", 3), ("can't honestly claim", 5),
+    ("still more heuristic", 4), ("more heuristic than", 4),
 ]
 
 _RESOLUTION_CUES = [
@@ -298,6 +309,11 @@ _ACTION_CUES = [
     ("can you", 3), ("could you", 3), ("would you", 3),
     ("let's make sure", 5), ("we need", 4), ("someone needs", 5),
     ("gotta", 3), ("better", 2),
+    # Review/analytical action signals
+    ("fixing", 4), ("would make", 3), ("would fix", 4),
+    ("until that", 4), ("until this", 4),
+    ("i'd recommend", 5), ("recommend", 3), ("recommendation", 4),
+    ("the fix is", 5), ("the next step", 4),
 ]
 
 _PENDING_CUES = [
