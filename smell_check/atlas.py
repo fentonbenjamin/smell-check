@@ -298,6 +298,9 @@ def coagulate_decisions(
     laws = laws or DECISION_LAWS
     law_by_name = {law.name: law for law in laws}
 
+    # --- Step 0: extract the governing subject ---
+    governing_subject = _extract_governing_subject(primitives)
+
     # --- Step 1: group primitives by kind ---
     by_kind: dict[str, list[Primitive]] = {}
     for p in primitives:
@@ -353,13 +356,22 @@ def coagulate_decisions(
         # Motif matched — collect required laws
         applied_laws = [ln for ln in motif.required_laws if ln in law_by_name]
 
-        # Pick the best representative
-        best = max(triggered_by, key=lambda p: (p.confidence, len(p.text)))
+        # Pick the best representative — highest confidence, then shortest
+        # (shorter = more specific, avoids full-input fallback text)
+        best = max(triggered_by, key=lambda p: (p.confidence, -len(p.text)))
+
+        # Compose a subject-first judgment instead of quoting the span
+        composed = _compose_judgment(
+            motif.output_type,
+            governing_subject,
+            best.text,
+            blocker_text=best.text if motif.output_type == "OpenQuestion" else "",
+        )
 
         # Build judgment
         judgments.append(Judgment(
             kind=motif.output_type,
-            subject=_normalize(best.text),
+            subject=composed,
             state=_state_from_kind(motif.output_type),
             why=motif.description,
             anchors=[_anchor(p) for p in triggered_by],
@@ -378,9 +390,10 @@ def coagulate_decisions(
     for p in by_kind.get("question", []):
         if _is_consumed(p):
             continue
+        composed = _compose_open_question(governing_subject, p.text)
         judgments.append(Judgment(
             kind="OpenQuestion",
-            subject=_normalize(p.text),
+            subject=composed,
             state="open",
             why="Explicitly raised as a question.",
             anchors=[_anchor(p)],
@@ -408,6 +421,93 @@ def coagulate_decisions(
             ))
 
     return judgments
+
+
+# ---------------------------------------------------------------------------
+# Subject extraction — what is this conversation about?
+# ---------------------------------------------------------------------------
+
+# Proposal/decision verbs that introduce the governing subject
+_PROPOSAL_CUES = (
+    "we should ", "let's ", "the plan is ", "i propose ", "i think we should ",
+    "we're going to ", "we're going with ", "going to ", "we need to ",
+    "we want to ", "i want to ", "should we ", "can we ", "why don't we ",
+)
+
+
+def _extract_governing_subject(primitives: list[Primitive]) -> str:
+    """Find the governing subject of the conversation. Pure.
+
+    Looks for the first proposal/decision clause and extracts its object.
+    Falls back to the longest substantive primitive text.
+    """
+    # Look for proposal language
+    for p in primitives:
+        lower = p.text.lower()
+        for cue in _PROPOSAL_CUES:
+            if cue in lower:
+                # Extract the clause after the cue, stop at sentence boundary
+                idx = lower.index(cue) + len(cue)
+                rest = p.text[idx:].strip()
+                # Truncate at first sentence break
+                for sep in (".\n", ".\r", ". ", "?\n", "?\r", "? ", "\n"):
+                    end = rest.find(sep)
+                    if 0 < end < 120:
+                        rest = rest[:end]
+                        break
+                subject = rest.strip().rstrip(".")
+                if 10 < len(subject) < 120:
+                    return subject
+
+    # Fallback: longest non-question, non-hedge primitive
+    substantive = [p for p in primitives if p.kind not in ("question",) and len(p.text) > 20]
+    if substantive:
+        best = max(substantive, key=lambda p: len(p.text))
+        return _normalize(best.text)
+
+    return ""
+
+
+def _compose_judgment(kind: str, subject: str, evidence_text: str, blocker_text: str = "") -> str:
+    """Compose a subject-first judgment sentence. Pure.
+
+    Instead of quoting the raw span, frame the judgment around the governing subject.
+    """
+    if not subject:
+        # No subject recovered — fall back to normalized evidence
+        return _normalize(evidence_text)
+
+    # Capitalize subject for sentence start
+    subj = subject[0].upper() + subject[1:] if subject else ""
+
+    if kind == "StablePoint":
+        return f"{subj} is agreed"
+    elif kind == "ResolvedDecision":
+        return f"{subj} was challenged and then explicitly resolved"
+    elif kind == "ProvisionalDecision":
+        return f"{subj} has only tentative agreement — not fully committed"
+    elif kind == "OpenQuestion":
+        if blocker_text:
+            # Frame as a question about the blocker
+            blocker_clean = _normalize(blocker_text)
+            return f"Unresolved: {blocker_clean}"
+        return f"It is unclear whether {subject} is settled"
+    elif kind == "Concern":
+        return f"{subj} has unresolved risks"
+    else:
+        return _normalize(evidence_text)
+
+
+def _compose_open_question(subject: str, question_text: str) -> str:
+    """Compose a subject-aware open question. Pure."""
+    clean = _normalize(question_text)
+    # If the question already contains a question mark, keep it
+    if "?" in clean:
+        return clean
+    # If we have a subject, frame the question around it
+    if subject and len(clean) > 15:
+        return f"{clean} — how does this affect {subject}?"
+    return clean
 
 
 def _state_from_kind(kind: str) -> str:
