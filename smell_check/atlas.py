@@ -10,6 +10,7 @@ Pure. No I/O. No model calls.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -934,8 +935,6 @@ def claims_to_primitives(claims: list[dict[str, Any]]) -> list[Primitive]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-import re
 
 _SPEAKER_RE = re.compile(r"^[A-Z][A-Za-z\s]*:\s*")
 
