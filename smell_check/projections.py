@@ -260,29 +260,17 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
             else:
                 code_findings.append(card)
 
-    # --- Prose claims: atlas pipeline ---
-    # Convert to primitives
+    # --- Prose claims: ALL go through the atlas pipeline ---
+    # No more constraint bypass — CONSTRAINT claims are routed through
+    # operational motifs (ownership_gap, evidence_challenge, requirement)
     all_prose = prose_claims + list(contested) + list(deferred)
     primitives = claims_to_primitives(all_prose)
 
-    # Run decision coagulator
+    # Run decision coagulator (handles all primitive kinds now)
     judgments = coagulate_decisions(primitives)
 
-    # Also handle CONSTRAINT claims as findings (not decision-state)
-    constraint_findings = []
-    for claim in prose_claims:
-        if claim.get("mother_type") == "CONSTRAINT":
-            text = claim.get("text", "")
-            constraint_findings.append({
-                "judgment": _normalize_text(text),
-                "because": "Expressed as a constraint or requirement.",
-                "where": {"text": text, "clause_id": claim.get("clause_id", "")},
-                "what_to_do": "Assign it or confirm it's handled." if _looks_actionable(text) else "Verify it's being respected.",
-                "drillback": {"mother_type": "CONSTRAINT"},
-            })
-
     # --- Render judgments into output cards ---
-    findings = list(code_findings) + list(constraint_findings)
+    findings = list(code_findings)
     stable_points = list(code_stable)
     open_questions: list[dict[str, Any]] = []
 

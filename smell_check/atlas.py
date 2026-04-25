@@ -117,6 +117,7 @@ class Motif:
     required_laws: list[str] = field(default_factory=list)  # law names to apply
     output_type: str = ""           # judgment kind this motif produces
     merge_key: str = "subject_ref"  # field to group on during coagulation
+    emit_per_primitive: bool = False  # if True, emit one judgment per primitive instead of coagulating
     examples: list[str] = field(default_factory=list)
     anti_examples: list[str] = field(default_factory=list)
 
@@ -185,7 +186,99 @@ DECISION_MOTIFS: list[Motif] = [
     ),
 ]
 
-MOTIF_INDEX: dict[str, Motif] = {m.name: m for m in DECISION_MOTIFS}
+
+# ---------------------------------------------------------------------------
+# Operational readiness motifs
+# ---------------------------------------------------------------------------
+
+_OWNERSHIP_CUES = (
+    "who's going to", "who will", "who owns", "can someone",
+    "someone needs to", "someone has to", "who's responsible",
+    "need someone to", "anybody", "anyone",
+)
+
+_EVIDENCE_CHALLENGE_CUES = (
+    "not a real test", "that's not", "that won't work",
+    "doesn't prove", "doesn't show", "not representative",
+    "not production", "not at scale", "1% of", "only staging",
+)
+
+_DEFERRAL_CUES = (
+    "figure it out later", "deal with that when",
+    "closer to the date", "when it comes up", "if it becomes",
+    "we'll see", "cross that bridge", "worry about it later",
+    "not now", "later",
+)
+
+OPERATIONAL_LAWS: list[Law] = [
+    Law(
+        name="ownership_gap_is_risk",
+        description="An action without a clear owner is a risk, not a requirement.",
+        when="question about ownership with no answer in the thread",
+        then="emit OwnershipGap, not Requirement",
+        precedence=75,
+    ),
+    Law(
+        name="evidence_challenge_is_concern",
+        description="Challenging the quality of evidence is a concern about validity.",
+        when="statement challenges test coverage, data quality, or proof",
+        then="emit EvidenceChallenge, not Requirement",
+        precedence=75,
+    ),
+    Law(
+        name="deferral_is_risk",
+        description="Deferring a dependency is a risk signal, not resolution.",
+        when="response to a concern is 'we'll deal with it later'",
+        then="emit Concern with deferral blocker",
+        precedence=70,
+    ),
+]
+
+OPERATIONAL_MOTIFS: list[Motif] = [
+    Motif(
+        name="ownership_gap",
+        description="An action or responsibility has no clear owner.",
+        trigger_kinds=["dependency"],
+        trigger_events=["tension_detected"],
+        blocker_kinds=[],
+        blocker_events=[],
+        required_laws=["ownership_gap_is_risk"],
+        output_type="OpenQuestion",
+        examples=["Who's going to be on call?", "Can someone own the runbook?"],
+        anti_examples=["I'll handle it.", "Dev B is on point for this."],
+    ),
+    Motif(
+        name="evidence_challenge",
+        description="Someone challenges the quality or validity of evidence.",
+        trigger_kinds=["challenge", "dependency"],
+        trigger_events=["tension_detected", "belief_revised"],
+        blocker_kinds=["resolution"],
+        blocker_events=["tension_resolved"],
+        required_laws=["evidence_challenge_is_concern"],
+        output_type="Concern",
+        examples=["Staging is 1% of prod. That's not a real test.", "We haven't tested on production data."],
+        anti_examples=["The staging run looked clean.", "Tests pass."],
+    ),
+    Motif(
+        name="operational_requirement",
+        description="A concrete prerequisite, deadline, or action constraint.",
+        trigger_kinds=["dependency"],
+        trigger_events=["tension_detected"],
+        blocker_kinds=[],
+        blocker_events=[],
+        required_laws=[],
+        output_type="Concern",
+        emit_per_primitive=True,  # each requirement is independent
+        examples=["We need the runbook before go-live.", "We need to decide by Friday."],
+        anti_examples=["It would be nice to have.", "Maybe we should consider."],
+    ),
+]
+
+# Combine all motifs and laws
+ALL_MOTIFS = DECISION_MOTIFS + OPERATIONAL_MOTIFS
+ALL_LAWS = DECISION_LAWS + OPERATIONAL_LAWS
+MOTIF_INDEX: dict[str, Motif] = {m.name: m for m in ALL_MOTIFS}
+LAW_INDEX.update({law.name: law for law in OPERATIONAL_LAWS})
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +387,8 @@ def coagulate_decisions(
     if not primitives:
         return []
 
-    motifs = motifs or DECISION_MOTIFS
-    laws = laws or DECISION_LAWS
+    motifs = motifs or ALL_MOTIFS
+    laws = laws or ALL_LAWS
     law_by_name = {law.name: law for law in laws}
 
     # --- Step 0: extract the governing subject ---
@@ -340,6 +433,14 @@ def coagulate_decisions(
             if _is_consumed(p):
                 continue
             if p.kind in motif.trigger_kinds or p.epistemic_event in motif.trigger_events:
+                # Operational motifs need text-level confirmation
+                # to avoid consuming all dependencies indiscriminately
+                if motif.name == "ownership_gap":
+                    if not any(cue in p.text.lower() for cue in _OWNERSHIP_CUES):
+                        continue
+                elif motif.name == "evidence_challenge":
+                    if not any(cue in p.text.lower() for cue in _EVIDENCE_CHALLENGE_CUES):
+                        continue
                 triggered_by.append(p)
 
         if not triggered_by:
@@ -360,28 +461,43 @@ def coagulate_decisions(
         # (shorter = more specific, avoids full-input fallback text)
         best = max(triggered_by, key=lambda p: (p.confidence, -len(p.text)))
 
-        # Compose a subject-first judgment instead of quoting the span
-        composed = _compose_judgment(
-            motif.output_type,
-            governing_subject,
-            best.text,
-            blocker_text=best.text if motif.output_type == "OpenQuestion" else "",
-        )
-
-        # Build judgment
-        judgments.append(Judgment(
-            kind=motif.output_type,
-            subject=composed,
-            state=_state_from_kind(motif.output_type),
-            why=motif.description,
-            anchors=[_anchor(p) for p in triggered_by],
-            blockers=_blockers_for_motif(motif, by_kind),
-            next_step=_next_step_for(motif.output_type),
-            laws_applied=applied_laws,
-            motif=motif.name,
-            evidence=[p.text for p in triggered_by],
-            confidence_basis=f"trigger: {len(triggered_by)} primitives, laws: {len(applied_laws)}",
-        ))
+        if motif.emit_per_primitive:
+            # Emit one judgment per primitive (independent concerns)
+            # Use the primitive's own text as subject, not the governing subject
+            for p in triggered_by:
+                composed = _normalize(p.text)
+                judgments.append(Judgment(
+                    kind=motif.output_type,
+                    subject=composed,
+                    state=_state_from_kind(motif.output_type),
+                    why=motif.description,
+                    anchors=[_anchor(p)],
+                    blockers=_blockers_for_motif(motif, by_kind),
+                    next_step=_next_step_for(motif.output_type),
+                    laws_applied=applied_laws,
+                    motif=motif.name,
+                    evidence=[p.text],
+                ))
+        else:
+            # Coagulate into one judgment
+            best = max(triggered_by, key=lambda p: (p.confidence, -len(p.text)))
+            composed = _compose_judgment(
+                motif.output_type, governing_subject, best.text,
+                blocker_text=best.text if motif.output_type == "OpenQuestion" else "",
+            )
+            judgments.append(Judgment(
+                kind=motif.output_type,
+                subject=composed,
+                state=_state_from_kind(motif.output_type),
+                why=motif.description,
+                anchors=[_anchor(p) for p in triggered_by],
+                blockers=_blockers_for_motif(motif, by_kind),
+                next_step=_next_step_for(motif.output_type),
+                laws_applied=applied_laws,
+                motif=motif.name,
+                evidence=[p.text for p in triggered_by],
+                confidence_basis=f"trigger: {len(triggered_by)} primitives, laws: {len(applied_laws)}",
+            ))
 
         # Consume the matched primitives
         _consume(triggered_by)
@@ -420,7 +536,67 @@ def coagulate_decisions(
                 evidence=[p.text for p in unconsumed_claims],
             ))
 
+    # --- Subject dedup: one dominant state per subject ---
+    # If two judgments have high word overlap in their subjects,
+    # the one with higher-precedence laws wins. This prevents
+    # the same subject from appearing as both tentative and resolved.
+    judgments = _dedup_by_subject(judgments, law_by_name)
+
     return judgments
+
+
+def _dedup_by_subject(
+    judgments: list[Judgment],
+    law_by_name: dict[str, Law],
+) -> list[Judgment]:
+    """Remove conflicting judgments about the same subject. Pure.
+
+    When two judgments share >40% word overlap in their subjects,
+    keep the one whose laws have higher max precedence.
+    """
+    if len(judgments) <= 1:
+        return judgments
+
+    import string as _string
+    _stop = frozenset({"a", "an", "the", "is", "are", "was", "were", "to", "for",
+                        "of", "in", "on", "and", "or", "but", "not", "with", "has",
+                        "have", "it", "we", "i", "that", "this", "only"})
+
+    def _words(text: str) -> set[str]:
+        stripped = text.lower().translate(str.maketrans("", "", _string.punctuation))
+        return set(stripped.split()) - _stop
+
+    def _max_precedence(j: Judgment) -> int:
+        if not j.laws_applied:
+            return 0
+        return max(
+            (law_by_name[ln].precedence for ln in j.laws_applied if ln in law_by_name),
+            default=0,
+        )
+
+    # Build keep list — for each pair with high overlap, keep the stronger one
+    to_remove: set[int] = set()
+    for i in range(len(judgments)):
+        if i in to_remove:
+            continue
+        for j_idx in range(i + 1, len(judgments)):
+            if j_idx in to_remove:
+                continue
+            wi = _words(judgments[i].subject)
+            wj = _words(judgments[j_idx].subject)
+            if not wi or not wj:
+                continue
+            overlap = len(wi & wj) / len(wi | wj)
+            if overlap > 0.4:
+                # Same subject — keep the one with higher precedence
+                pi = _max_precedence(judgments[i])
+                pj = _max_precedence(judgments[j_idx])
+                if pi >= pj:
+                    to_remove.add(j_idx)
+                else:
+                    to_remove.add(i)
+
+    return [j for idx, j in enumerate(judgments) if idx not in to_remove]
 
 
 # ---------------------------------------------------------------------------
@@ -572,13 +748,19 @@ def claims_to_primitives(claims: list[dict[str, Any]]) -> list[Primitive]:
         ):
             kind = "resolution"
             stance = "positive"
-        # 2. Challenge
+        # 2. Challenge (including evidence challenges)
         elif event == "belief_revised" or any(
             cue in lower for cue in _CHALLENGE_CUES
-        ):
+        ) or any(cue in lower for cue in _EVIDENCE_CHALLENGE_CUES):
             kind = "challenge"
             stance = "negative"
-        # 3. Question
+        # 3. Ownership question (question about who owns/does something → dependency)
+        elif (mother_type == "UNCERTAINTY" or event == "question_posed") and any(
+            cue in lower for cue in _OWNERSHIP_CUES
+        ):
+            kind = "dependency"
+            stance = "negative"
+        # 3b. Regular question
         elif mother_type == "UNCERTAINTY" or event == "question_posed":
             kind = "question"
             stance = "negative"
@@ -697,20 +879,20 @@ def verify_pipeline_shape() -> tuple[bool, list[str]]:
     errors = []
 
     # Laws must exist and have unique names
-    law_names = [law.name for law in DECISION_LAWS]
+    law_names = [law.name for law in ALL_LAWS]
     if len(law_names) != len(set(law_names)):
         errors.append("duplicate law names")
     if not law_names:
         errors.append("no laws defined")
 
     # Motifs must reference valid laws
-    for motif in DECISION_MOTIFS:
+    for motif in ALL_MOTIFS:
         for law_name in motif.required_laws:
             if law_name not in LAW_INDEX:
                 errors.append(f"motif '{motif.name}' references unknown law '{law_name}'")
 
     # Motifs must have unique names
-    motif_names = [m.name for m in DECISION_MOTIFS]
+    motif_names = [m.name for m in ALL_MOTIFS]
     if len(motif_names) != len(set(motif_names)):
         errors.append("duplicate motif names")
 
