@@ -302,8 +302,8 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
 
     # --- Build summary ---
     total_issues = len(findings) + len(open_questions)
-    # Estimate input length from evidence in all judgments
-    total_input = sum(len(c.get("text", "")) for c in promoted + contested + deferred)
+    # Estimate input length from ALL claims (including those filtered by document lane)
+    total_input = sum(len(c.get("text", "")) for c in all_prose)
 
     if total_issues == 0 and stable_points:
         summary = "Everything looks stable. No smells detected."
