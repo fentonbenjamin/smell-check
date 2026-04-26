@@ -235,8 +235,10 @@ def _build_combined_app(port: int):
         try:
             result = smell_check(text, topic=topic)
             return JSONResponse(result, media_type="application/json")
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+        except (ValueError, KeyError, TypeError) as e:
+            return JSONResponse({"error": "Invalid input."}, status_code=400)
+        except Exception:
+            return JSONResponse({"error": "Analysis failed."}, status_code=500)
 
     async def verify(request: Request):
         body = await request.json()
@@ -269,11 +271,11 @@ def _build_combined_app(port: int):
                     "open_questions": judgments.get("open_questions", []),
                 }
             return JSONResponse(result)
-        except Exception as e:
+        except Exception:
             return JSONResponse({
                 "valid": False,
                 "wall_state": "broken",
-                "errors": [str(e)],
+                "errors": ["Verification failed."],
                 "checks_performed": 0,
                 "perception_mode": "unknown",
                 "execution_class": "unknown",

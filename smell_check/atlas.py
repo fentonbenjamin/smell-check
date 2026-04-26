@@ -459,6 +459,12 @@ def coagulate_decisions(
             (set(motif.blocker_kinds) & all_kinds)
             or (set(motif.blocker_events) & all_events)
         )
+
+        # Additional blocker: if the motif is explicit_agreement, block if
+        # ANY primitive has hedged stance (not just commitment_hedged event)
+        if not blocked and motif.name == "explicit_agreement":
+            if any(p.stance == "hedged" for p in primitives):
+                blocked = True
         if blocked:
             continue
 
@@ -816,9 +822,13 @@ def _compose_open_question(subject: str, question_text: str) -> str:
     # If the question already contains a question mark, keep it
     if "?" in clean:
         return clean
-    # If we have a subject, frame the question around it
+    # If subject is different from the question text, add context
     if subject and len(clean) > 15:
-        return f"{clean} — how does this affect {subject}?"
+        # Don't append subject if it's the same as the question
+        subj_norm = _normalize(subject).lower()
+        clean_lower = clean.lower()
+        if subj_norm not in clean_lower and clean_lower not in subj_norm:
+            return f"{clean} — how does this affect {subject}?"
     return clean
 
 
