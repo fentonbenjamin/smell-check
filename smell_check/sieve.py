@@ -491,6 +491,12 @@ def promote(
             if anchor_i and anchor_j and anchor_i != anchor_j:
                 continue  # different structural anchors = not in tension
 
+            # Review-aware: claims from the same structured review don't contest
+            # each other — they're the same author's analysis, not contradictions
+            if (final_promoted[i].get("_review_section")
+                    and final_promoted[j].get("_review_section")):
+                continue
+
             text_i = final_promoted[i].get("text", "").strip()
             text_j = final_promoted[j].get("text", "").strip()
             if _has_attack_signal(text_i, text_j):
