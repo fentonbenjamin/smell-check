@@ -654,28 +654,3 @@ def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
     return files
 
 
-def _diff_file_finding(filename: str, added: int, removed: int) -> dict[str, Any]:
-    """Create a finding for a changed file in a diff. Legacy helper."""
-    if removed > added * 2:
-        judgment = f"{filename}: significant removal ({removed} lines removed, {added} added)"
-        mother_type = CONSTRAINT
-        finding_kind = "significant_removal"
-    elif added > removed * 3:
-        judgment = f"{filename}: significant addition ({added} lines added)"
-        mother_type = UNCERTAINTY
-        finding_kind = "large_addition"
-    else:
-        judgment = f"{filename}: modified (+{added}/-{removed})"
-        mother_type = RELATION
-        finding_kind = "file_change"
-
-    return {
-        "text": judgment,
-        "mother_type": mother_type,
-        "subtype": finding_kind,
-        "confidence": 0.6,
-        "claim_type": "observation",
-        "clause_id": f"diff_{filename}",
-        "_finding_kind": finding_kind,
-        "_where": {"file": filename, "added": added, "removed": removed},
-    }

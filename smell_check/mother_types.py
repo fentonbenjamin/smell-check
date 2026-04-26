@@ -416,40 +416,7 @@ def tagger_to_typed_units(
         units.append(unit)
 
     # No fallback. If the tagger found nothing, we abstain.
-    # The old fallback created a CONTRACT unit for any text >50 chars,
-    # which caused raw code and diffs to appear as "decided" — a
-    # dangerous false positive for a code review tool.
     # Abstention is honest. Fake certainty is not.
-    if not units:
-        return units
-
-    # --- dead code below kept as comment for history ---
-    # Previously: substantial text with no tags → default CONTRACT unit
-    # if not units and len(text.strip()) > 50:
-    #     unit = make_typed_unit(text=text[:500], mother_type=CONTRACT, ...)
-    if False:  # noqa: preserve the old signature for git blame
-        witness = make_witness(
-            witness_type="raw_turn",
-            source_kind="conversation",
-            source_ref=turn_id,
-            observed_by="mother_types.fallback",
-            authority="system",
-        )
-        unit = make_typed_unit(
-            text=text[:500],
-            mother_type=CONTRACT,
-            subtype="unknown_subtype",
-            confidence=0.5,
-            authority="human" if "human" in actor.lower() else "system",
-            source_refs=[turn_id] if turn_id else [],
-            witness_refs=[witness["id"]],
-            actor=actor,
-            turn_id=turn_id,
-            timestamp=timestamp,
-            source=source,
-        )
-        unit["_witness"] = witness
-        units.append(unit)
 
     return units
 
