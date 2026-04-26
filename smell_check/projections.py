@@ -286,9 +286,16 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                     "families": c.get("_review_families", []),
                 },
             }
+            section = c.get("_review_section", "")
             if subtype == "open_question":
                 doc_questions.append(card)
             elif subtype in ("quality_note", "assessment"):
+                doc_stable.append(card)
+            elif section == "recommendations":
+                card["because"] = "Recommendation from the review."
+                doc_stable.append(card)
+            elif section == "overall":
+                card["because"] = "Overall assessment."
                 doc_stable.append(card)
             else:
                 card["what_to_do"] = "Address this finding."
