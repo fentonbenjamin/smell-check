@@ -780,30 +780,34 @@ def _compose_judgment(kind: str, subject: str, evidence_text: str, blocker_text:
     """Compose a subject-first judgment sentence. Pure.
 
     Instead of quoting the raw span, frame the judgment around the governing subject.
+    Uses the evidence text for specificity when the subject alone is too vague.
     """
     if not subject:
-        # No subject recovered — fall back to normalized evidence
         return _normalize(evidence_text)
 
-    # Capitalize subject for sentence start
     subj = subject[0].upper() + subject[1:] if subject else ""
+    evidence_clean = _normalize(evidence_text)
 
     if kind == "StablePoint":
-        return f"{subj} is agreed"
+        # Use evidence if it's more specific than the subject
+        if len(evidence_clean) > len(subj) + 10:
+            return evidence_clean
+        return f"{subj} — agreed"
     elif kind == "ResolvedDecision":
-        return f"{subj} was challenged and then explicitly resolved"
+        return f"{subj} — challenged then resolved"
     elif kind == "ProvisionalDecision":
-        return f"{subj} has only tentative agreement — not fully committed"
+        if subject and len(subj) > 15:
+            return f"{subj} — agreement is hedged, not fully committed"
+        return f"{evidence_clean} — tentative, not fully committed"
     elif kind == "OpenQuestion":
         if blocker_text:
-            # Frame as a question about the blocker
             blocker_clean = _normalize(blocker_text)
             return f"Unresolved: {blocker_clean}"
-        return f"It is unclear whether {subject} is settled"
+        return f"Unresolved: {evidence_clean}"
     elif kind == "Concern":
-        return f"{subj} has unresolved risks"
+        return evidence_clean
     else:
-        return _normalize(evidence_text)
+        return evidence_clean
 
 
 def _compose_open_question(subject: str, question_text: str) -> str:

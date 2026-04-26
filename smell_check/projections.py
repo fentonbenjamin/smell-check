@@ -343,6 +343,7 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
                 summary += f" {len(stable_points)} point{'s' if len(stable_points) != 1 else ''} look{'s' if len(stable_points) == 1 else ''} stable."
 
         return {
+            "context": _build_context_blurb(input_kind, findings, stable_points, open_questions, review_claims),
             "summary": summary,
             "findings": findings,
             "stable_points": stable_points,
@@ -416,6 +417,7 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
             summary += f" {len(stable_points)} point{'s' if len(stable_points) != 1 else ''} look{'s' if len(stable_points) == 1 else ''} stable."
 
     return {
+        "context": _build_context_blurb(input_kind, findings, stable_points, open_questions, prose_claims),
         "summary": summary,
         "findings": findings,
         "stable_points": stable_points,
@@ -662,6 +664,112 @@ _ACTION_SIGNALS = frozenset({
     "pick up", "drop off", "confirm", "check",
     "remind", "update", "fix", "deploy", "ship",
 })
+
+
+def _build_context_blurb(
+    input_kind: str,
+    findings: list[dict[str, Any]],
+    stable_points: list[dict[str, Any]],
+    open_questions: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+) -> str:
+    """Build a one-line contextual blurb about what the input IS. Pure.
+
+    Not what the chamber found — what the input is about.
+    """
+    # Collect judgment text for topic extraction (findings + stable are more specific than raw claims)
+    all_text = []
+    for f in findings:
+        all_text.append(f.get("judgment", ""))
+    for s in stable_points:
+        all_text.append(s.get("judgment", ""))
+    for q in open_questions:
+        all_text.append(q.get("judgment", ""))
+    # Fallback to raw claims if no judgments
+    if not all_text:
+        for c in claims:
+            all_text.append(c.get("text", ""))
+
+    # Detect the dominant topic from the claims
+    # Use the most common significant words
+    from collections import Counter
+    _stop = frozenset({
+        "a", "an", "the", "is", "are", "was", "were", "be", "been",
+        "to", "for", "of", "in", "on", "and", "or", "but", "not",
+        "with", "at", "by", "from", "as", "it", "its", "this", "that",
+        "we", "i", "you", "they", "has", "have", "had", "do", "does",
+        "so", "if", "then", "just", "also", "very", "too", "still",
+        "now", "no", "yes", "all", "some", "any", "more", "most",
+        "about", "into", "than", "been", "being", "would", "could",
+        "should", "can", "will", "may", "might", "shall",
+        # Speaker names and common thread words
+        "dev", "lead", "eng", "alice", "bob", "sarah", "tom",
+        "think", "know", "want", "need", "get", "got", "let",
+        "said", "say", "says", "look", "looks", "make", "take",
+        "come", "going", "wait", "sure", "fine", "okay", "yeah",
+        "good", "right", "like", "thing", "things", "way",
+        "when", "where", "how", "what", "why", "who",
+    })
+
+    word_counts: Counter = Counter()
+    for text in all_text:
+        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+        for w in words:
+            if w not in _stop:
+                word_counts[w] += 1
+
+    top_words = [w for w, _ in word_counts.most_common(5)]
+
+    # Build the blurb based on input kind and content
+    if input_kind == "document":
+        # Check for review sections
+        sections = set()
+        for c in claims:
+            sec = c.get("_review_section", "")
+            if sec:
+                sections.add(sec)
+
+        if "findings" in sections:
+            severity_counts: Counter = Counter()
+            for c in claims:
+                sev = c.get("_review_severity", "")
+                if sev:
+                    severity_counts[sev] += 1
+            sev_parts = []
+            for sev in sorted(severity_counts.keys()):
+                sev_parts.append(f"{severity_counts[sev]} {sev.upper()}")
+            sev_str = f" ({', '.join(sev_parts)})" if sev_parts else ""
+
+            topic = ", ".join(top_words[:3]) if top_words else "the codebase"
+            return f"Structured review covering {topic}{sev_str}."
+        else:
+            topic = ", ".join(top_words[:3]) if top_words else "the project"
+            return f"Document about {topic}."
+
+    else:
+        # Thread/conversation
+        n_speakers = len(set(
+            c.get("speaker", "") or _extract_speaker(c.get("text", ""))
+            for c in claims if c.get("text", "")
+        )) - 1  # subtract empty speaker
+        n_speakers = max(n_speakers, 0)
+
+        topic = ", ".join(top_words[:3]) if top_words else "a topic"
+
+        if n_speakers >= 2:
+            return f"Conversation between {n_speakers}+ participants about {topic}."
+        elif findings or open_questions:
+            return f"Discussion about {topic} with unresolved concerns."
+        else:
+            return f"Thread about {topic}."
+
+
+def _extract_speaker(text: str) -> str:
+    """Extract speaker name from 'Speaker: text' format."""
+    m = _SPEAKER_RE.match(text)
+    if m:
+        return m.group().rstrip(": ").strip()
+    return ""
 
 
 def _fn_name(where: dict) -> str:
