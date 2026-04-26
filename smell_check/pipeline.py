@@ -179,17 +179,20 @@ def analyze_thread(
         all_loss = thread_loss + list(code_loss)
 
     elif input_kind == "document":
-        # DOCUMENT LANE — specs, plans, critiques, bug reports
-        # The tagger runs but with noise filtering:
-        # - suppress content inside code blocks (quoted examples, not assertions)
-        # - suppress file paths and schema references
-        # - confidence floor is the same as threads (handled by mother_types)
-        # - _is_document_noise() handles the suppression, not a blanket floor
+        # DOCUMENT LANE — specs, plans, critiques, reviews
+        # Primary perceiver: review_perception (section structure + lexical families)
+        # Fallback: tagger with noise filtering (for any signals review_perception misses)
+        from .review_perception import perceive_review, review_findings_to_claims
+
+        # Step 1: Review perception — section-aware, family-based
+        review_findings = perceive_review(text)
+        review_claims = review_findings_to_claims(review_findings)
+
+        # Step 2: Also run tagger for any additional signals
         pipeline_result = run_pipeline_with_receipts(
             text, topic_context, turn_id=turn_id, actor=actor,
         )
         tagger_result = pipeline_result["tagger_result"]
-        sieve_result = pipeline_result["sieve_result"]
         classification = tagger_result["classification"]
 
         clause_spans = {c.clause_id: c.span for c in classification.clauses}
@@ -204,26 +207,22 @@ def analyze_thread(
             for t in classification.tags
         ]
 
-        # Filter tags: suppress quoted examples, paths, and low-confidence signals
-        filtered_tags = []
-        for tag in tags_data:
-            span = tag.get("span", "")
-            # Suppress content that looks like a quoted example or path
-            if _is_document_noise(span):
-                continue
-            filtered_tags.append(tag)
-
-        typed_units = tagger_to_typed_units(
+        # Filter tagger tags: suppress noise
+        filtered_tags = [t for t in tags_data if not _is_document_noise(t.get("span", ""))]
+        tagger_units = tagger_to_typed_units(
             text, filtered_tags, actor=actor, turn_id=turn_id,
         )
 
-        # Re-promote with only the filtered units
-        if typed_units:
+        # Merge: review claims + tagger units, then promote through sieve
+        all_claims = review_claims + list(tagger_units)
+        if all_claims:
             all_promoted, all_contested, all_deferred, all_loss = promote(
-                typed_units, topic_context
+                all_claims, topic_context
             )
         else:
             all_promoted, all_contested, all_deferred, all_loss = [], [], [], []
+
+        typed_units = tagger_units
 
     else:
         # THREAD LANE ONLY — clause cues, surface acts, prose perception
