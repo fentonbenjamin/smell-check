@@ -135,20 +135,28 @@ def _is_document(lines: list[str]) -> bool:
     turn_markers = 0
     long_lines = 0
     path_lines = 0
+    severity_markers = 0
 
     _meta_cues = (
         "expected:", "observed:", "repro:", "fix:", "status:",
         "context:", "goal:", "deliverable:", "recommendation:",
         "likely fix", "bug:", "issue:", "requirement:",
+        "findings", "my blunt read", "my read", "overall",
+        "recommended", "what's strong", "what's wrong",
+        "open questions", "assumptions",
     )
     _turn_pattern = re.compile(r"^[A-Z][a-z]+\s*:")  # "Alice:", "PM:", "Dev A:"
+    _severity_pattern = re.compile(r"\[P\d\]", re.IGNORECASE)
+    _bold_header = re.compile(r"^\*\*[^*]+\*\*\s*$")
 
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith(("#", "##")):
+        if stripped.startswith(("#", "##")) or _bold_header.match(stripped):
             section_headers += 1
-        if stripped.startswith(("- ", "* ", "1. ", "2. ", "3. ")):
+        if stripped.startswith(("- ", "* ", "1. ", "2. ", "3. ", "4. ", "5. ")):
             bullet_items += 1
+        if _severity_pattern.search(stripped):
+            severity_markers += 1
         if any(stripped.lower().startswith(cue) for cue in _meta_cues):
             meta_labels += 1
         if _turn_pattern.match(stripped) and len(stripped) < 200:
@@ -166,6 +174,12 @@ def _is_document(lines: list[str]) -> bool:
     if meta_labels >= 2:
         return True
     if section_headers >= 3:
+        return True
+    if severity_markers >= 2:
+        return True
+    if section_headers >= 1 and severity_markers >= 1:
+        return True
+    if section_headers >= 2 and bullet_items >= 1:
         return True
 
     # Anti-signal: conversational turn-taking pattern

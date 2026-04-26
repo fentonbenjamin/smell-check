@@ -260,7 +260,89 @@ def project_smell_check(governed_state: dict[str, Any]) -> dict[str, Any]:
             else:
                 code_findings.append(card)
 
-    # --- Prose claims: ALL go through the atlas pipeline ---
+    # --- Document mode: render review findings directly ---
+    # Structured reviews already have typed findings from review_perception.
+    # Don't run them through the decision coagulator — it merges what should stay separate.
+    if input_kind == "document":
+        review_claims = [c for c in prose_claims if c.get("_review_section")]
+        non_review = [c for c in prose_claims if not c.get("_review_section")]
+
+        doc_findings = []
+        doc_questions = []
+        doc_stable = []
+        for c in review_claims:
+            subtype = c.get("subtype", "")
+            text = _normalize_text(c.get("text", ""))
+            severity = c.get("_review_severity", "")
+            sev_label = f"[{severity.upper()}] " if severity else ""
+            card = {
+                "judgment": f"{sev_label}{text}",
+                "because": f"Review finding ({subtype})." if subtype else "Detected in structured review.",
+                "where": {"text": c.get("text", "")},
+                "drillback": {
+                    "kind": subtype,
+                    "section": c.get("_review_section", ""),
+                    "severity": severity,
+                    "families": c.get("_review_families", []),
+                },
+            }
+            if subtype == "open_question":
+                doc_questions.append(card)
+            elif subtype in ("quality_note", "assessment"):
+                doc_stable.append(card)
+            else:
+                card["what_to_do"] = "Address this finding."
+                doc_findings.append(card)
+
+        # Non-review claims still go through the atlas
+        if non_review:
+            contested_marked = [dict(c, _contested=True) for c in contested]
+            all_prose = non_review + contested_marked + list(deferred)
+            primitives = claims_to_primitives(all_prose)
+            judgments = coagulate_decisions(primitives)
+            governing_subject = _extract_governing_subject(primitives)
+            judgments = coagulate_concerns(judgments, governing_subject)
+            for j in judgments:
+                card = _render_judgment(j)
+                if j.kind in ("StablePoint", "ResolvedDecision"):
+                    doc_stable.append(card)
+                elif j.kind == "OpenQuestion":
+                    doc_questions.append(card)
+                else:
+                    doc_findings.append(card)
+
+        findings = list(code_findings) + doc_findings
+        stable_points = list(code_stable) + doc_stable
+        open_questions = doc_questions
+
+        # Build summary
+        total_issues = len(findings) + len(open_questions)
+        if total_issues == 0 and stable_points:
+            summary = "Everything looks stable. No smells detected."
+        elif total_issues == 0:
+            total_input = sum(len(c.get("text", "")) for c in promoted)
+            if total_input > 200:
+                summary = "No strong signals detected. The input may be descriptive rather than decisional."
+            else:
+                summary = "Not enough signal to judge. Try a longer thread."
+        else:
+            parts = []
+            if findings:
+                parts.append(f"{len(findings)} finding{'s' if len(findings) != 1 else ''}")
+            if open_questions:
+                parts.append(f"{len(open_questions)} open question{'s' if len(open_questions) != 1 else ''}")
+            summary = f"{'. '.join(parts)}."
+            if stable_points:
+                summary += f" {len(stable_points)} point{'s' if len(stable_points) != 1 else ''} look{'s' if len(stable_points) == 1 else ''} stable."
+
+        return {
+            "summary": summary,
+            "findings": findings,
+            "stable_points": stable_points,
+            "open_questions": open_questions,
+        }
+
+    # --- Thread/code mode: atlas pipeline ---
     # Mark contested claims so the primitive extractor can see them
     contested_marked = []
     for c in contested:
